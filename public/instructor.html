@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>트레이딩 시뮬레이터 강사용</title>
+    <title>증권거래 시뮬레이터 - 교수자화면</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">강사용 화면</p>
-          <h1>교실 시장을 운영하세요.</h1>
+          <p class="eyebrow">교수자 화면</p>
+          <h1>증권거래 시뮬레이터</h1>
         </div>
         <div class="status-cluster">
           <span id="instructor-connection" class="pill neutral">오프라인</span>
@@ -29,7 +29,7 @@
           <div class="form-row">
             <label>
               세션 이름
-              <input id="session-name" type="text" value="투자 수업">
+              <input id="session-name" type="text" value="경영-항경 입문">
             </label>
             <label>
               기준 가격 ($)
@@ -43,11 +43,11 @@
         </form>
 
         <details>
-          <summary>기존 강사용 토큰 복원</summary>
+          <summary>기존 교수자용 토큰 복원</summary>
           <form id="restore-token-form" class="stack">
             <label>
-              강사용 토큰
-              <textarea id="restore-token" rows="3" placeholder="저장한 강사용 인증 토큰을 붙여 넣으세요"></textarea>
+              교수자용 토큰
+              <textarea id="restore-token" rows="3" placeholder="저장한 교수자용 인증 토큰을 붙여 넣으세요"></textarea>
             </label>
             <button class="button" type="submit">저장된 토큰 사용</button>
           </form>
@@ -76,7 +76,7 @@
             <strong id="dashboard-session-state">-</strong>
           </article>
           <article class="panel stat-card">
-            <span class="label">학생 수</span>
+            <span class="label">수강생 수</span>
             <strong id="dashboard-student-count">0</strong>
           </article>
           <article class="panel stat-card">
