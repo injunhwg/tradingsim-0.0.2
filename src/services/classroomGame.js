@@ -7,9 +7,9 @@ const DEFAULT_BORROW_INTEREST_BPS = 1000;
 const SAR_BONUS_CENTS = 2000;
 const DEFAULT_EPS_ANNOUNCEMENT_COUNT = 4;
 const DEFAULT_TRADABLE_STOCKS = [
-  { stockKey: 'A', displayName: '종목 A', sortOrder: 1, initialPositionQty: 5 },
-  { stockKey: 'B', displayName: '종목 B', sortOrder: 2, initialPositionQty: 0 },
-  { stockKey: 'C', displayName: '종목 C', sortOrder: 3, initialPositionQty: 0 }
+  { stockKey: 'A', displayName: '주식 A', sortOrder: 1, initialPositionQty: 5 },
+  { stockKey: 'B', displayName: '주식 B', sortOrder: 2, initialPositionQty: 5 },
+  { stockKey: 'C', displayName: '주식 C', sortOrder: 3, initialPositionQty: 5 }
 ];
 
 const SUITS = [
