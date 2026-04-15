@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>트레이딩 시뮬레이터 강사용</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">강사용 화면</p>
+          <h1>교실 시장을 운영하세요.</h1>
+        </div>
+        <div class="status-cluster">
+          <span id="instructor-connection" class="pill neutral">오프라인</span>
+          <button id="instructor-logout" class="button ghost" type="button" hidden>세션 지우기</button>
+        </div>
+      </header>
+
+      <section id="instructor-setup" class="panel stack">
+        <h2>세션 생성 또는 초기화</h2>
+        <form id="bootstrap-form" class="stack">
+          <label>
+            초기 관리자 비밀키
+            <input id="bootstrap-secret" type="password" autocomplete="off" required>
+          </label>
+          <div class="form-row">
+            <label>
+              세션 이름
+              <input id="session-name" type="text" value="투자 수업">
+            </label>
+            <label>
+              기준 가격 ($)
+              <input id="reference-price" type="number" min="0.01" step="0.01" value="40.00">
+            </label>
+          </div>
+          <div class="button-row">
+            <button id="create-session" class="button primary" type="submit">세션 생성</button>
+            <button id="reset-session" class="button" type="button">세션 초기화</button>
+          </div>
+        </form>
+
+        <details>
+          <summary>기존 강사용 토큰 복원</summary>
+          <form id="restore-token-form" class="stack">
+            <label>
+              강사용 토큰
+              <textarea id="restore-token" rows="3" placeholder="저장한 강사용 인증 토큰을 붙여 넣으세요"></textarea>
+            </label>
+            <button class="button" type="submit">저장된 토큰 사용</button>
+          </form>
+        </details>
+      </section>
+
+      <section id="instructor-error" class="panel error-panel" hidden></section>
+      <section id="instructor-toast" class="panel toast-panel" hidden></section>
+
+      <section id="instructor-dashboard" hidden>
+        <div class="grid cards-grid">
+          <article class="panel stat-card">
+            <span class="label">세션</span>
+            <strong id="dashboard-session-name">-</strong>
+          </article>
+          <article class="panel stat-card">
+            <span class="label">참가 코드</span>
+            <strong id="dashboard-join-code">-</strong>
+          </article>
+          <article class="panel stat-card">
+            <span class="label">상태</span>
+            <strong id="dashboard-session-state">-</strong>
+          </article>
+          <article class="panel stat-card">
+            <span class="label">학생 수</span>
+            <strong id="dashboard-student-count">0</strong>
+          </article>
+          <article class="panel stat-card">
+            <span class="label">접속 중</span>
+            <strong id="dashboard-connected-count">0</strong>
+          </article>
+          <article class="panel stat-card">
+            <span class="label">최근 체결가</span>
+            <strong id="dashboard-last-trade">-</strong>
+          </article>
+          <article class="panel stat-card">
+            <span class="label">남은 시간</span>
+            <strong id="dashboard-time-remaining">00:00</strong>
+          </article>
+          <article class="panel stat-card">
+            <span class="label">청산가</span>
+            <strong id="dashboard-liquidation">비공개</strong>
+          </article>
+        </div>
+
+        <div class="panel">
+          <div class="button-row">
+            <button id="session-open" class="button primary" type="button">시작</button>
+            <button id="session-pause" class="button" type="button">일시정지</button>
+            <button id="session-close" class="button" type="button">종료</button>
+            <button id="session-finalize" class="button danger" type="button">최종 청산가 공개</button>
+          </div>
+        </div>
+
+        <div class="grid two-column-grid">
+          <section class="panel">
+            <h2>접속 학생</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>이름</th>
+                    <th>접속</th>
+                    <th>주식 수</th>
+                    <th>현금</th>
+                    <th>미체결 주문</th>
+                  </tr>
+                </thead>
+                <tbody id="dashboard-students"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <section class="panel">
+          <h2>자동 공개 정보</h2>
+          <ul id="public-info-schedule" class="announcement-list"></ul>
+        </section>
+
+        <section class="panel">
+          <h2>강사용 카드 구성</h2>
+          <p id="dashboard-card-total" class="muted">현재 청산가 구성은 비공개입니다.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>카드</th>
+                  <th>색상</th>
+                  <th>기여값</th>
+                </tr>
+              </thead>
+              <tbody id="dashboard-cards"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <div class="grid two-column-grid">
+          <section class="panel">
+            <h2>순위표</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>순위</th>
+                    <th>이름</th>
+                    <th>평가금액</th>
+                    <th>수익률</th>
+                    <th>현금</th>
+                    <th>주식 수</th>
+                  </tr>
+                </thead>
+                <tbody id="dashboard-leaderboard"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>시장 스냅샷</h2>
+            <div class="table-wrap">
+              <table class="order-book-table">
+                <thead>
+                  <tr>
+                    <th colspan="3">매수</th>
+                    <th colspan="3">매도</th>
+                  </tr>
+                  <tr>
+                    <th>주문수</th>
+                    <th>수량</th>
+                    <th>매수호가</th>
+                    <th>매도호가</th>
+                    <th>수량</th>
+                    <th>주문수</th>
+                  </tr>
+                </thead>
+                <tbody id="dashboard-order-book"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <div class="grid two-column-grid">
+          <section class="panel">
+            <h2>최근 거래</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>수량</th>
+                    <th>가격</th>
+                    <th>시간</th>
+                  </tr>
+                </thead>
+                <tbody id="dashboard-trades"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>공지</h2>
+            <ul id="dashboard-announcements" class="announcement-list"></ul>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/instructor.js"></script>
+  </body>
+</html>

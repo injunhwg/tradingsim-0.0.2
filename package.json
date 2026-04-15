@@ -1,0 +1,23 @@
+{
+  "name": "trading-simulator-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Correctness-first backend matching engine for a classroom trading simulator.",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "node src/server.js",
+    "migrate": "node scripts/migrate.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.14",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "ws": "^8.18.0"
+  }
+}

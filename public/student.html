@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>트레이딩 시뮬레이터 학생용</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">학생 화면</p>
+          <h1>교실 시장에서 거래하세요.</h1>
+        </div>
+        <div class="status-cluster">
+          <span id="student-connection" class="pill neutral">오프라인</span>
+          <button id="student-logout" class="button ghost" type="button" hidden>나가기</button>
+        </div>
+      </header>
+
+      <section id="student-join-panel" class="panel">
+        <h2>세션 참가</h2>
+        <form id="student-join-form" class="stack">
+          <label>
+            참가 코드
+            <input id="join-code" name="joinCode" type="text" maxlength="6" autocomplete="off" required>
+          </label>
+          <label>
+            이름
+            <input id="nickname" name="displayName" type="text" maxlength="32" autocomplete="nickname" required>
+          </label>
+          <button class="button primary" type="submit">참가하기</button>
+        </form>
+      </section>
+
+      <section id="student-error" class="panel error-panel" hidden></section>
+      <section id="student-toast" class="panel toast-panel" hidden></section>
+
+      <section id="student-dashboard" hidden>
+        <div class="grid cards-grid">
+          <article class="panel stat-card">
+            <span class="label">현금</span>
+            <strong id="student-cash">$0.00</strong>
+          </article>
+          <article class="panel stat-card">
+            <span class="label">주식 수</span>
+            <strong id="student-shares">0</strong>
+          </article>
+          <article class="panel stat-card">
+            <span class="label">포트폴리오 가치</span>
+            <strong id="student-portfolio">$0.00</strong>
+          </article>
+          <article class="panel stat-card">
+            <span class="label">최우선 매수호가</span>
+            <strong id="student-best-bid">-</strong>
+          </article>
+          <article class="panel stat-card">
+            <span class="label">최우선 매도호가</span>
+            <strong id="student-best-ask">-</strong>
+          </article>
+          <article class="panel stat-card">
+            <span class="label">게임 상태</span>
+            <strong id="student-session-state">-</strong>
+          </article>
+          <article class="panel stat-card">
+            <span class="label">남은 시간</span>
+            <strong id="student-time-remaining">00:00</strong>
+          </article>
+        </div>
+
+        <div class="grid two-column-grid">
+          <section class="panel">
+            <h2>주문 제출</h2>
+            <form id="student-order-form" class="stack">
+              <div class="form-row">
+                <label>
+                  구분
+                  <select id="order-side" name="side">
+                    <option value="BUY">매수</option>
+                    <option value="SELL">매도</option>
+                  </select>
+                </label>
+                <label>
+                  유형
+                  <select id="order-type" name="orderType">
+                    <option value="MARKET">시장가</option>
+                    <option value="LIMIT">지정가</option>
+                  </select>
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  수량
+                  <input id="order-quantity" name="quantity" type="number" min="1" step="1" value="1" required>
+                </label>
+                <label id="order-price-wrap" hidden>
+                  지정가 ($)
+                  <input id="order-price" name="limitPrice" type="number" min="0.01" step="0.01" placeholder="40.00">
+                </label>
+              </div>
+              <button class="button primary" type="submit">주문 제출</button>
+            </form>
+          </section>
+
+          <section class="panel">
+            <h2>비공개 힌트</h2>
+            <p id="peek-status" class="muted">이용 가능 여부를 확인하는 중입니다…</p>
+            <button id="buy-peek" class="button" type="button" disabled>힌트 구매</button>
+            <ul id="peek-list" class="announcement-list"></ul>
+          </section>
+        </div>
+
+        <div class="grid two-column-grid">
+          <section class="panel">
+            <div class="section-heading">
+              <h2>내 미체결 주문</h2>
+              <span id="open-order-count" class="muted">0</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>구분</th>
+                    <th>유형</th>
+                    <th>수량</th>
+                    <th>가격</th>
+                    <th>상태</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="student-open-orders"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>최근 체결</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>구분</th>
+                    <th>수량</th>
+                    <th>가격</th>
+                    <th>시간</th>
+                  </tr>
+                </thead>
+                <tbody id="student-fills"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <div class="grid two-column-grid">
+          <section class="panel">
+            <h2>호가창</h2>
+            <div class="table-wrap">
+              <table class="order-book-table">
+                <thead>
+                  <tr>
+                    <th colspan="3">매수</th>
+                    <th colspan="3">매도</th>
+                  </tr>
+                  <tr>
+                    <th>주문수</th>
+                    <th>수량</th>
+                    <th>매수호가</th>
+                    <th>매도호가</th>
+                    <th>수량</th>
+                    <th>주문수</th>
+                  </tr>
+                </thead>
+                <tbody id="student-order-book"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>최근 거래</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>수량</th>
+                    <th>가격</th>
+                    <th>시간</th>
+                  </tr>
+                </thead>
+                <tbody id="student-trades"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <section class="panel">
+          <h2>공지</h2>
+          <ul id="student-announcements" class="announcement-list"></ul>
+        </section>
+
+        <div class="grid two-column-grid">
+          <section class="panel">
+            <h2>최종 청산가</h2>
+            <p id="student-liquidation" class="muted">공개 전까지 비공개입니다.</p>
+          </section>
+
+          <section class="panel">
+            <h2>순위표</h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>순위</th>
+                    <th>이름</th>
+                    <th>평가금액</th>
+                    <th>수익률</th>
+                  </tr>
+                </thead>
+                <tbody id="student-leaderboard"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/student.js"></script>
+  </body>
+</html>

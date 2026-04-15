@@ -1,0 +1,44 @@
+previews:
+  generation: off
+
+services:
+  - type: web
+    name: trading-simulator-app
+    runtime: node
+    plan: starter
+    numInstances: 1
+    buildCommand: npm install
+    preDeployCommand: npm run migrate
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: trading-simulator-db
+          property: connectionString
+      - key: BOOTSTRAP_ADMIN_SECRET
+        sync: false
+      - key: DEFAULT_REFERENCE_PRICE_CENTS
+        value: "4000"
+      - key: RECENT_TRADES_LIMIT
+        value: "20"
+      - key: ANNOUNCEMENT_HISTORY_LIMIT
+        value: "20"
+      - key: ANNOUNCEMENT_POLL_INTERVAL_MS
+        value: "1000"
+      - key: GAME_DURATION_SECONDS
+        value: "900"
+      - key: PEEK_PRICE_CENTS
+        value: "100"
+      - key: BORROW_INTEREST_BPS
+        value: "1000"
+
+databases:
+  - name: trading-simulator-db
+    plan: basic-256mb
+    databaseName: trading_simulator
+    user: trading_simulator
