@@ -14,6 +14,7 @@ import {
   formatPercentFromBps,
   formatPrice,
   formatSessionStatus,
+  formatStockLabel,
   formatTime,
   hidePanel,
   makeIdempotencyKey,
@@ -34,7 +35,10 @@ const dom = {
   error: document.querySelector('#student-error'),
   toast: document.querySelector('#student-toast'),
   connection: document.querySelector('#student-connection'),
+  stockSelect: document.querySelector('#student-stock-select'),
+  selectedStock: document.querySelector('#student-selected-stock'),
   orderForm: document.querySelector('#student-order-form'),
+  orderStock: document.querySelector('#order-stock'),
   orderType: document.querySelector('#order-type'),
   orderPriceWrap: document.querySelector('#order-price-wrap'),
   cash: document.querySelector('#student-cash'),
@@ -61,13 +65,12 @@ const state = {
   auth: readStorage(STORAGE_KEYS.student),
   me: null,
   session: null,
-  market: null,
+  stocks: [],
+  selectedStockId: null,
+  stockSnapshots: [],
   account: null,
   orders: [],
   recentFills: [],
-  bids: [],
-  asks: [],
-  recentTrades: [],
   announcements: [],
   features: null,
   privatePeeks: [],
@@ -104,27 +107,94 @@ function clearError() {
   hidePanel(dom.error);
 }
 
+function syncSelectedStock(preferredStockId = state.selectedStockId) {
+  const availableIds = new Set(state.stocks.map((stock) => stock.id));
+  state.selectedStockId = availableIds.has(preferredStockId) ? preferredStockId : state.stocks[0]?.id || null;
+
+  const selectedValue = state.selectedStockId ? String(state.selectedStockId) : '';
+  if (dom.stockSelect.value !== selectedValue) {
+    dom.stockSelect.value = selectedValue;
+  }
+  if (dom.orderStock.value !== selectedValue) {
+    dom.orderStock.value = selectedValue;
+  }
+}
+
+function renderStockOptions() {
+  const options = state.stocks
+    .map((stock) => `<option value="${stock.id}">${formatStockLabel(stock)}</option>`)
+    .join('');
+
+  dom.stockSelect.innerHTML = options;
+  dom.orderStock.innerHTML = options;
+  syncSelectedStock(state.selectedStockId);
+}
+
+function getSelectedStock() {
+  return state.stocks.find((stock) => stock.id === state.selectedStockId) || state.stocks[0] || null;
+}
+
+function getSelectedSnapshot() {
+  return state.stockSnapshots.find((snapshot) => snapshot.stock?.id === state.selectedStockId) || state.stockSnapshots[0] || null;
+}
+
+function getHolding(sessionStockId) {
+  return state.account?.holdings?.find((holding) => holding.sessionStockId === sessionStockId) || null;
+}
+
+function getMarkPrice(sessionStockId) {
+  const stock = state.stocks.find((entry) => entry.id === sessionStockId);
+  const snapshot = state.stockSnapshots.find((entry) => entry.stock?.id === sessionStockId);
+  return snapshot?.market?.markPriceCents ?? snapshot?.market?.lastTradePriceCents ?? stock?.referencePriceCents ?? 0;
+}
+
+function computePortfolioValue() {
+  const holdingsValue = (state.account?.holdings || []).reduce(
+    (sum, holding) => sum + holding.positionQty * getMarkPrice(holding.sessionStockId),
+    0
+  );
+
+  return (state.account?.cashCents || 0) + holdingsValue;
+}
+
+function formatStockPrefix(item) {
+  const label = formatStockLabel(item);
+  return label === '-' ? '' : `${label} | `;
+}
+
 function applyOrderBook(snapshot) {
   state.session = snapshot.session || state.session;
-  state.market = snapshot.market || state.market;
-  state.bids = snapshot.bids || [];
-  state.asks = snapshot.asks || [];
-  state.recentTrades = snapshot.recentTrades || [];
+  state.stocks = snapshot.stocks || state.stocks;
+  state.stockSnapshots = snapshot.stockSnapshots || [];
   state.announcements = snapshot.announcements || [];
   state.liquidation = snapshot.liquidation || state.liquidation;
+  renderStockOptions();
   state.sessionSnapshotAt = Date.now();
 }
 
 function applyAccount(accountState) {
+  state.session = accountState.session || state.session;
+  state.stocks = accountState.stocks || state.stocks;
   state.account = accountState.account || state.account;
   state.orders = accountState.orders || [];
   state.recentFills = accountState.recentFills || [];
   state.privatePeeks = accountState.privatePeeks || [];
+  renderStockOptions();
 }
 
 function applyLeaderboard(leaderboardState) {
-  state.leaderboard = leaderboardState.leaderboard || [];
+  state.stocks = leaderboardState.stocks || state.stocks;
   state.liquidation = leaderboardState.liquidation || state.liquidation;
+  state.leaderboard = leaderboardState.leaderboard || [];
+  renderStockOptions();
+}
+
+function replaceStockSnapshots(stockSnapshots) {
+  if (!Array.isArray(stockSnapshots)) {
+    return;
+  }
+
+  state.stockSnapshots = stockSnapshots;
 }
 
 function getLiveRemainingSeconds() {
@@ -138,22 +208,26 @@ function getLiveRemainingSeconds() {
 }
 
 function renderSummary() {
-  const cash = state.account?.cashCents || 0;
-  const shares = state.account?.positionQty || 0;
-  const mark = state.market?.markPriceCents || state.market?.lastTradePriceCents || state.session?.referencePriceCents || 0;
-  const portfolio = cash + shares * mark;
+  const selectedStock = getSelectedStock();
+  const selectedSnapshot = getSelectedSnapshot();
+  const holding = getHolding(selectedStock?.id);
 
-  dom.cash.textContent = formatMoney(cash);
-  dom.shares.textContent = String(shares);
-  dom.portfolio.textContent = formatMoney(portfolio);
-  dom.bestBid.textContent = state.bids[0] ? `${formatPrice(state.bids[0].priceCents)} x ${state.bids[0].totalQty}` : '-';
-  dom.bestAsk.textContent = state.asks[0] ? `${formatPrice(state.asks[0].priceCents)} x ${state.asks[0].totalQty}` : '-';
+  dom.selectedStock.textContent = formatStockLabel(selectedStock);
+  dom.cash.textContent = formatMoney(state.account?.cashCents || 0);
+  dom.shares.textContent = String(holding?.positionQty || 0);
+  dom.portfolio.textContent = formatMoney(computePortfolioValue());
+  dom.bestBid.textContent = selectedSnapshot?.bids?.[0]
+    ? `${formatPrice(selectedSnapshot.bids[0].priceCents)} x ${selectedSnapshot.bids[0].totalQty}`
+    : '-';
+  dom.bestAsk.textContent = selectedSnapshot?.asks?.[0]
+    ? `${formatPrice(selectedSnapshot.asks[0].priceCents)} x ${selectedSnapshot.asks[0].totalQty}`
+    : '-';
   dom.sessionState.textContent = formatSessionStatus(state.session?.status);
   dom.timeRemaining.textContent = formatDuration(getLiveRemainingSeconds());
   dom.peekStatus.textContent = state.features?.peeks?.supported
-    ? `힌트 1회 가격은 ${formatMoney(state.features.peeks.priceCents)}이며 카드 기여값 3개를 보여줍니다.`
+    ? `${formatStockLabel(selectedStock)} 비공개 힌트 1회 가격은 ${formatMoney(state.features.peeks.priceCents)}이며 카드 기여값 3개를 보여줍니다.`
     : '이 버전에서는 비공개 힌트를 사용할 수 없습니다.';
-  dom.buyPeek.disabled = !state.features?.peeks?.supported || state.session?.status === 'CLOSED';
+  dom.buyPeek.disabled = !state.features?.peeks?.supported || state.session?.status === 'CLOSED' || !selectedStock;
 }
 
 function formatPeekContribution(value) {
@@ -168,6 +242,7 @@ function renderOrders() {
     openOrders.map(
       (order) => `
         <tr>
+          <td>${formatStockLabel(order)}</td>
           <td>${formatOrderSide(order.side)}</td>
           <td>${formatOrderType(order.orderType)}</td>
           <td>${order.remainingQty} / ${order.originalQty}</td>
@@ -187,6 +262,7 @@ function renderFills() {
     state.recentFills.map(
       (fill) => `
         <tr>
+          <td>${formatStockLabel(fill)}</td>
           <td>${formatOrderSide(fill.side)}</td>
           <td>${fill.qty}</td>
           <td>${formatPrice(fill.priceCents)}</td>
@@ -199,13 +275,15 @@ function renderFills() {
 }
 
 function renderBook() {
-  renderOrderBookRows(dom.orderBook, state.bids, state.asks);
+  const snapshot = getSelectedSnapshot();
+  renderOrderBookRows(dom.orderBook, snapshot?.bids || [], snapshot?.asks || []);
 }
 
 function renderTrades() {
+  const snapshot = getSelectedSnapshot();
   renderTableRows(
     dom.trades,
-    state.recentTrades.map(
+    (snapshot?.recentTrades || []).map(
       (trade) => `
         <tr>
           <td>${trade.qty}</td>
@@ -225,7 +303,7 @@ function renderAnnouncements() {
       (announcement) => `
         <li>
           <strong>${formatTime(announcement.createdAt)}</strong>
-          <div>${announcement.message}</div>
+          <div>${formatStockPrefix(announcement)}${announcement.message}</div>
         </li>
       `
     ),
@@ -239,7 +317,7 @@ function renderPeeks() {
     state.privatePeeks.map(
       (peek) => `
         <li>
-          <strong>${peek.contributions.map((value) => formatPeekContribution(value)).join(', ')}</strong>
+          <strong>${formatStockPrefix(peek)}${peek.contributions.map((value) => formatPeekContribution(value)).join(', ')}</strong>
           <div class="muted">${formatTime(peek.createdAt)}</div>
         </li>
       `
@@ -248,10 +326,26 @@ function renderPeeks() {
   );
 }
 
+function renderLiquidation() {
+  if (!state.liquidation?.revealed) {
+    dom.liquidation.textContent = '공개 전까지 비공개입니다.';
+    return;
+  }
+
+  dom.liquidation.innerHTML = (state.liquidation.stocks || [])
+    .map(
+      (entry) => `
+        <div>
+          <strong>${formatStockLabel(entry.stock)}:</strong> ${formatMoney(entry.valueCents)}
+          <span class="muted"> | 카드: ${(entry.cards || []).map((card) => card.label).join(', ')}</span>
+        </div>
+      `
+    )
+    .join('');
+}
+
 function renderLeaderboard() {
-  dom.liquidation.textContent = state.liquidation?.revealed
-    ? `${formatMoney(state.liquidation.valueCents)} | 카드: ${state.liquidation.cards.map((card) => card.label).join(', ')}`
-    : '공개 전까지 비공개입니다.';
+  renderLiquidation();
 
   renderTableRows(
     dom.leaderboard,
@@ -304,6 +398,7 @@ async function refreshStudentData() {
   state.me = me;
   state.features = me.features;
   state.session = me.principal.session;
+  state.stocks = me.stocks || state.stocks;
   state.sessionSnapshotAt = Date.now();
   applyOrderBook(orderBook);
   applyAccount(accountState);
@@ -329,16 +424,24 @@ function handleRealtimeEvent(event) {
       render();
       break;
     case 'player.fill':
-      showToast(`체결: ${event.payload.fills.map((fill) => `${fill.qty}주 @ ${formatPrice(fill.priceCents)}`).join(', ')}`);
+      showToast(
+        `체결: ${event.payload.fills
+          .map((fill) => `${formatStockPrefix(state.stocks.find((stock) => stock.id === fill.sessionStockId) || fill)}${fill.qty}주 @ ${formatPrice(fill.priceCents)}`)
+          .join(', ')}`
+      );
       debouncedRefresh();
       break;
     case 'peek.revealed':
-      showToast(`힌트: ${event.payload.peek.contributions.map((value) => formatPeekContribution(value)).join(', ')}`);
+      showToast(
+        `힌트: ${formatStockPrefix(state.stocks.find((stock) => stock.id === event.payload.peek.sessionStockId) || event.payload.peek)}${event.payload.peek.contributions
+          .map((value) => formatPeekContribution(value))
+          .join(', ')}`
+      );
       debouncedRefresh();
       break;
     case 'announcement.created':
       state.announcements = [...state.announcements, event.payload.announcement].slice(-20);
-      render();
+      renderAnnouncements();
       break;
     case 'leaderboard.final':
       applyLeaderboard(event.payload);
@@ -350,10 +453,12 @@ function handleRealtimeEvent(event) {
         ...state.session,
         ...(event.payload.session || {})
       };
-      state.sessionSnapshotAt = Date.now();
-      if (event.payload.market) {
-        state.market = event.payload.market;
+      if (Array.isArray(event.payload.stocks)) {
+        state.stocks = event.payload.stocks;
+        renderStockOptions();
       }
+      replaceStockSnapshots(event.payload.stockSnapshots);
+      state.sessionSnapshotAt = Date.now();
       render();
       break;
     default:
@@ -377,13 +482,12 @@ function resetSession() {
   state.auth = null;
   state.me = null;
   state.session = null;
-  state.market = null;
+  state.stocks = [];
+  state.selectedStockId = null;
+  state.stockSnapshots = [];
   state.account = null;
   state.orders = [];
   state.recentFills = [];
-  state.bids = [];
-  state.asks = [];
-  state.recentTrades = [];
   state.announcements = [];
   state.features = null;
   state.privatePeeks = [];
@@ -449,6 +553,18 @@ dom.logout.addEventListener('click', () => {
   resetSession();
 });
 
+dom.stockSelect.addEventListener('change', () => {
+  state.selectedStockId = Number.parseInt(dom.stockSelect.value, 10) || null;
+  syncSelectedStock(state.selectedStockId);
+  render();
+});
+
+dom.orderStock.addEventListener('change', () => {
+  state.selectedStockId = Number.parseInt(dom.orderStock.value, 10) || null;
+  syncSelectedStock(state.selectedStockId);
+  render();
+});
+
 dom.orderType.addEventListener('change', () => {
   dom.orderPriceWrap.hidden = dom.orderType.value !== 'LIMIT';
 });
@@ -473,6 +589,7 @@ dom.orderForm.addEventListener('submit', async (event) => {
         'idempotency-key': makeIdempotencyKey()
       },
       body: {
+        sessionStockId: Number.parseInt(form.get('sessionStockId'), 10),
         side: String(form.get('side')).toUpperCase(),
         orderType,
         quantity: Number.parseInt(form.get('quantity'), 10),
@@ -484,6 +601,7 @@ dom.orderForm.addEventListener('submit', async (event) => {
     document.querySelector('#order-quantity').value = '1';
     dom.orderType.value = 'MARKET';
     dom.orderPriceWrap.hidden = true;
+    syncSelectedStock(state.selectedStockId);
     if (realtimeClient === null) {
       await refreshStudentData();
     }
@@ -518,10 +636,20 @@ dom.buyPeek.addEventListener('click', async () => {
     clearError();
     const result = await apiFetch('/api/peeks', {
       method: 'POST',
-      token: state.auth.token
+      token: state.auth.token,
+      body: {
+        sessionStockId: state.selectedStockId
+      }
     });
-    showToast(`힌트 구매: ${result.peek.contributions.map((value) => formatPeekContribution(value)).join(', ')}`);
-    await refreshStudentData();
+    showToast(
+      `힌트 구매: ${formatStockPrefix(result.peek)}${result.peek.contributions
+        .map((value) => formatPeekContribution(value))
+        .join(', ')}`
+    );
+
+    if (realtimeClient === null) {
+      await refreshStudentData();
+    }
   } catch (error) {
     showError(formatErrorMessage(error));
   }

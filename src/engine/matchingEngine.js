@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 
 const { initializeSchema } = require('../db/schema');
+const { buildTradableStocks } = require('../services/classroomGame');
 
 const STARTING_CASH_CENTS = 20000;
 const MAX_BORROW_CENTS = 20000;
@@ -98,18 +99,28 @@ function assertAccountInvariants(account) {
     });
   }
 
-  if (account.position_qty < -MAX_SHORT_QTY) {
-    throw new EngineError('SHORT_LIMIT_BREACH', 'Account position fell below the short limit.', {
+  if (account.reserved_buy_cents < 0) {
+    throw new EngineError('NEGATIVE_RESERVATION', 'Reservation tracking became negative.', {
       participantId: account.participant_id,
-      positionQty: account.position_qty
+      reservedBuyCents: account.reserved_buy_cents
+    });
+  }
+}
+
+function assertHoldingInvariants(holding) {
+  if (holding.position_qty < -MAX_SHORT_QTY) {
+    throw new EngineError('SHORT_LIMIT_BREACH', 'Account position fell below the short limit.', {
+      participantId: holding.participant_id,
+      sessionStockId: holding.session_stock_id,
+      positionQty: holding.position_qty
     });
   }
 
-  if (account.reserved_buy_cents < 0 || account.reserved_sell_qty < 0) {
+  if (holding.reserved_sell_qty < 0) {
     throw new EngineError('NEGATIVE_RESERVATION', 'Reservation tracking became negative.', {
-      participantId: account.participant_id,
-      reservedBuyCents: account.reserved_buy_cents,
-      reservedSellQty: account.reserved_sell_qty
+      participantId: holding.participant_id,
+      sessionStockId: holding.session_stock_id,
+      reservedSellQty: holding.reserved_sell_qty
     });
   }
 }
@@ -127,6 +138,10 @@ function validateOrderInput(input) {
 
   if (!Number.isInteger(input.participantId) || input.participantId <= 0) {
     throw new EngineError('INVALID_PARTICIPANT_ID', 'participantId must be a positive integer.');
+  }
+
+  if (!Number.isInteger(input.sessionStockId) || input.sessionStockId <= 0) {
+    throw new EngineError('INVALID_STOCK_ID', 'sessionStockId must be a positive integer.');
   }
 
   if (typeof input.idempotencyKey !== 'string' || input.idempotencyKey.trim() === '') {
@@ -157,6 +172,7 @@ function validateOrderInput(input) {
 
   return {
     sessionId: input.sessionId,
+    sessionStockId: input.sessionStockId,
     participantId: input.participantId,
     idempotencyKey: input.idempotencyKey.trim(),
     side,
@@ -172,6 +188,7 @@ function buildOrderResponse(order, fills, idempotencyHit = false) {
     order: {
       id: order.id,
       sessionId: order.session_id,
+      sessionStockId: order.session_stock_id,
       participantId: order.participant_id,
       side: order.side,
       orderType: order.order_type,
@@ -187,6 +204,7 @@ function buildOrderResponse(order, fills, idempotencyHit = false) {
     },
     fills: fills.map((fill) => ({
       id: fill.id,
+      sessionStockId: fill.session_stock_id,
       buyOrderId: fill.buy_order_id,
       sellOrderId: fill.sell_order_id,
       aggressorOrderId: fill.aggressor_order_id,
@@ -224,14 +242,39 @@ class MatchingEngine {
     const resolvedReferencePriceCents =
       Number.isInteger(referencePriceCents) && referencePriceCents > 0 ? referencePriceCents : 1000;
 
-    const result = await this.db.query(
-      `INSERT INTO market_sessions (session_name, join_code, status, reference_price_cents)
-       VALUES ($1, $2, $3, $4)
-       RETURNING *`,
-      [resolvedSessionName, resolvedJoinCode, status, resolvedReferencePriceCents]
-    );
+    return this.db.withTransaction(async (tx) => {
+      const result = await tx.query(
+        `INSERT INTO market_sessions (session_name, join_code, status, reference_price_cents)
+         VALUES ($1, $2, $3, $4)
+         RETURNING *`,
+        [resolvedSessionName, resolvedJoinCode, status, resolvedReferencePriceCents]
+      );
 
-    return result.rows[0];
+      const session = result.rows[0];
+      for (const stock of buildTradableStocks(resolvedReferencePriceCents)) {
+        await tx.query(
+          `INSERT INTO session_stocks (
+             session_id,
+             stock_key,
+             display_name,
+             sort_order,
+             reference_price_cents,
+             initial_position_qty
+           )
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            session.id,
+            stock.stockKey,
+            stock.displayName,
+            stock.sortOrder,
+            stock.referencePriceCents,
+            stock.initialPositionQty
+          ]
+        );
+      }
+
+      return session;
+    });
   }
 
   async createParticipant({ sessionId, externalId, displayName, role = 'STUDENT', authToken } = {}) {
@@ -258,24 +301,62 @@ class MatchingEngine {
       const participant = participantResult.rows[0];
 
       const accountResult = await tx.query(
-        `INSERT INTO accounts (participant_id, cash_cents, position_qty)
-         VALUES ($1, $2, $3)
+        `INSERT INTO accounts (participant_id, cash_cents, position_qty, reserved_sell_qty)
+         VALUES ($1, $2, 0, 0)
          RETURNING *`,
-        [participant.id, STARTING_CASH_CENTS, STARTING_POSITION_QTY]
+        [participant.id, STARTING_CASH_CENTS]
       );
+
+      const sessionStocksResult = await tx.query(
+        `SELECT *
+         FROM session_stocks
+         WHERE session_id = $1
+         ORDER BY sort_order ASC, id ASC`,
+        [sessionId]
+      );
+
+      const holdings = [];
+      for (const sessionStock of sessionStocksResult.rows) {
+        const holdingResult = await tx.query(
+          `INSERT INTO account_holdings (
+             participant_id,
+             session_stock_id,
+             position_qty,
+             reserved_sell_qty
+           )
+           VALUES ($1, $2, $3, 0)
+           RETURNING *`,
+          [participant.id, sessionStock.id, sessionStock.initial_position_qty]
+        );
+        holdings.push(holdingResult.rows[0]);
+      }
 
       return {
         participant,
-        account: accountResult.rows[0]
+        account: accountResult.rows[0],
+        holdings
       };
     });
 
     return inserted;
   }
 
+  async listSessionStocks(sessionId) {
+    const result = await this.db.query(
+      `SELECT *
+       FROM session_stocks
+       WHERE session_id = $1
+       ORDER BY sort_order ASC, id ASC`,
+      [sessionId]
+    );
+
+    return result.rows;
+  }
+
   async submitOrder(input) {
     const request = validateOrderInput(input);
     const requestHash = hashRequest({
+      sessionStockId: request.sessionStockId,
       side: request.side,
       orderType: request.orderType,
       quantity: request.quantity,
@@ -292,6 +373,8 @@ class MatchingEngine {
           });
         }
 
+        await this.#loadSessionStockForUpdate(tx, request.sessionStockId, request.sessionId);
+
         const idempotency = await this.#reserveIdempotencyKey(tx, request, requestHash);
         if (idempotency.response) {
           return {
@@ -301,11 +384,12 @@ class MatchingEngine {
         }
 
         const account = await this.#loadAccountForUpdate(tx, request.participantId, request.sessionId);
+        const holding = await this.#loadHoldingForUpdate(tx, request.participantId, request.sessionStockId);
         const order = await this.#insertInitialOrder(tx, request);
         const fills = [];
 
         const buyExposureCapacity = account.cash_cents + MAX_BORROW_CENTS - account.reserved_buy_cents;
-        const sellCapacity = account.position_qty + MAX_SHORT_QTY - account.reserved_sell_qty;
+        const sellCapacity = holding.position_qty + MAX_SHORT_QTY - holding.reserved_sell_qty;
 
         if (request.orderType === 'LIMIT' && request.side === 'BUY') {
           const requiredExposure = request.quantity * request.limitPriceCents;
@@ -331,6 +415,7 @@ class MatchingEngine {
         }
 
         const cachedAccounts = new Map([[account.participant_id, account]]);
+        const cachedHoldings = new Map([[holding.participant_id, holding]]);
         const contraOrders = await this.#loadRestingContraOrders(tx, request);
         let marketBuyBudget = request.side === 'BUY' && request.orderType === 'MARKET' ? buyExposureCapacity : null;
         let marketSellCapacity = request.side === 'SELL' && request.orderType === 'MARKET' ? sellCapacity : null;
@@ -370,11 +455,19 @@ class MatchingEngine {
           }
 
           const contraAccount = await this.#loadOrReuseAccount(tx, cachedAccounts, restingOrder.participant_id, request.sessionId);
+          const contraHolding = await this.#loadOrReuseHolding(
+            tx,
+            cachedHoldings,
+            restingOrder.participant_id,
+            request.sessionStockId
+          );
           this.#applyFill({
             aggressorOrder: order,
             aggressorAccount: account,
+            aggressorHolding: holding,
             restingOrder,
             restingAccount: contraAccount,
+            restingHolding: contraHolding,
             fillQty,
             fills,
             side: request.side
@@ -393,15 +486,21 @@ class MatchingEngine {
           if (request.side === 'BUY') {
             account.reserved_buy_cents += order.remaining_qty * request.limitPriceCents;
           } else {
-            account.reserved_sell_qty += order.remaining_qty;
+            holding.reserved_sell_qty += order.remaining_qty;
           }
         }
 
         assertAccountInvariants(account);
+        assertHoldingInvariants(holding);
 
         for (const cachedAccount of cachedAccounts.values()) {
           assertAccountInvariants(cachedAccount);
           await this.#persistAccount(tx, cachedAccount);
+        }
+
+        for (const cachedHolding of cachedHoldings.values()) {
+          assertHoldingInvariants(cachedHolding);
+          await this.#persistHolding(tx, cachedHolding);
         }
 
         for (const restingOrder of contraOrders) {
@@ -431,6 +530,7 @@ class MatchingEngine {
           const fillResult = await tx.query(
             `INSERT INTO fills (
               session_id,
+              session_stock_id,
               buy_order_id,
               sell_order_id,
               aggressor_order_id,
@@ -438,10 +538,11 @@ class MatchingEngine {
               price_cents,
               qty
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING *`,
             [
               request.sessionId,
+              request.sessionStockId,
               pendingFill.buy_order_id,
               pendingFill.sell_order_id,
               pendingFill.aggressor_order_id,
@@ -491,17 +592,20 @@ class MatchingEngine {
         }
 
         const account = await this.#loadAccountForUpdate(tx, participantId, sessionId);
+        const holding = await this.#loadHoldingForUpdate(tx, participantId, order.session_stock_id);
 
         if (order.order_type === 'LIMIT' && order.remaining_qty > 0) {
           if (order.side === 'BUY') {
             account.reserved_buy_cents -= order.remaining_qty * order.limit_price_cents;
           } else {
-            account.reserved_sell_qty -= order.remaining_qty;
+            holding.reserved_sell_qty -= order.remaining_qty;
           }
         }
 
         assertAccountInvariants(account);
+        assertHoldingInvariants(holding);
         await this.#persistAccount(tx, account);
+        await this.#persistHolding(tx, holding);
 
         order.status = 'CANCELLED';
         order.cancel_reason = 'USER_CANCELLED';
@@ -521,6 +625,18 @@ class MatchingEngine {
     );
 
     return result.rows[0] || null;
+  }
+
+  async getHoldings(participantId) {
+    const result = await this.db.query(
+      `SELECT *
+       FROM account_holdings
+       WHERE participant_id = $1
+       ORDER BY session_stock_id ASC`,
+      [participantId]
+    );
+
+    return result.rows;
   }
 
   async getOrder(orderId) {
@@ -684,10 +800,42 @@ class MatchingEngine {
     return account;
   }
 
+  async #loadHoldingForUpdate(tx, participantId, sessionStockId) {
+    const result = await tx.query(
+      `SELECT *
+       FROM account_holdings
+       WHERE participant_id = $1
+         AND session_stock_id = $2
+       FOR UPDATE`,
+      [participantId, sessionStockId]
+    );
+
+    const holding = result.rows[0];
+    if (!holding) {
+      throw new EngineError('ACCOUNT_NOT_FOUND', 'The participant holding does not exist.', {
+        participantId,
+        sessionStockId
+      });
+    }
+
+    return cloneRow(holding);
+  }
+
+  async #loadOrReuseHolding(tx, cache, participantId, sessionStockId) {
+    if (cache.has(participantId)) {
+      return cache.get(participantId);
+    }
+
+    const holding = await this.#loadHoldingForUpdate(tx, participantId, sessionStockId);
+    cache.set(participantId, holding);
+    return holding;
+  }
+
   async #insertInitialOrder(tx, request) {
     const result = await tx.query(
       `INSERT INTO orders (
          session_id,
+         session_stock_id,
          participant_id,
          side,
          order_type,
@@ -696,10 +844,11 @@ class MatchingEngine {
          remaining_qty,
          status
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $6, 'OPEN')
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $7, 'OPEN')
        RETURNING *`,
       [
         request.sessionId,
+        request.sessionStockId,
         request.participantId,
         request.side,
         request.orderType,
@@ -717,21 +866,23 @@ class MatchingEngine {
       SELECT *
       FROM orders
       WHERE session_id = $1
-        AND side = $2
+        AND session_stock_id = $2
+        AND side = $3
         AND order_type = 'LIMIT'
         AND status IN ('OPEN', 'PARTIALLY_FILLED')
     `;
 
+    params.push(request.sessionStockId);
     params.push(request.side === 'BUY' ? 'SELL' : 'BUY');
 
     if (request.side === 'BUY' && request.orderType === 'LIMIT') {
       params.push(request.limitPriceCents);
-      sql += ` AND limit_price_cents <= $3`;
+      sql += ` AND limit_price_cents <= $4`;
     }
 
     if (request.side === 'SELL' && request.orderType === 'LIMIT') {
       params.push(request.limitPriceCents);
-      sql += ` AND limit_price_cents >= $3`;
+      sql += ` AND limit_price_cents >= $4`;
     }
 
     if (request.side === 'BUY') {
@@ -746,18 +897,29 @@ class MatchingEngine {
     return result.rows.map((row) => cloneRow(row));
   }
 
-  #applyFill({ aggressorOrder, aggressorAccount, restingOrder, restingAccount, fillQty, fills, side }) {
+  #applyFill({
+    aggressorOrder,
+    aggressorAccount,
+    aggressorHolding,
+    restingOrder,
+    restingAccount,
+    restingHolding,
+    fillQty,
+    fills,
+    side
+  }) {
     const tradePrice = restingOrder.limit_price_cents;
 
     if (side === 'BUY') {
       aggressorAccount.cash_cents -= tradePrice * fillQty;
-      aggressorAccount.position_qty += fillQty;
+      aggressorHolding.position_qty += fillQty;
 
       restingAccount.cash_cents += tradePrice * fillQty;
-      restingAccount.position_qty -= fillQty;
-      restingAccount.reserved_sell_qty -= fillQty;
+      restingHolding.position_qty -= fillQty;
+      restingHolding.reserved_sell_qty -= fillQty;
 
       fills.push({
+        session_stock_id: aggressorOrder.session_stock_id,
         buy_order_id: aggressorOrder.id,
         sell_order_id: restingOrder.id,
         aggressor_order_id: aggressorOrder.id,
@@ -767,13 +929,14 @@ class MatchingEngine {
       });
     } else {
       aggressorAccount.cash_cents += tradePrice * fillQty;
-      aggressorAccount.position_qty -= fillQty;
+      aggressorHolding.position_qty -= fillQty;
 
       restingAccount.cash_cents -= tradePrice * fillQty;
-      restingAccount.position_qty += fillQty;
+      restingHolding.position_qty += fillQty;
       restingAccount.reserved_buy_cents -= tradePrice * fillQty;
 
       fills.push({
+        session_stock_id: aggressorOrder.session_stock_id,
         buy_order_id: restingOrder.id,
         sell_order_id: aggressorOrder.id,
         aggressor_order_id: aggressorOrder.id,
@@ -795,24 +958,34 @@ class MatchingEngine {
 
     assertAccountInvariants(aggressorAccount);
     assertAccountInvariants(restingAccount);
+    assertHoldingInvariants(aggressorHolding);
+    assertHoldingInvariants(restingHolding);
   }
 
   async #persistAccount(tx, account) {
     await tx.query(
       `UPDATE accounts
        SET cash_cents = $2,
-           position_qty = $3,
-           reserved_buy_cents = $4,
-           reserved_sell_qty = $5,
+           reserved_buy_cents = $3,
            updated_at = NOW()
        WHERE participant_id = $1`,
       [
         account.participant_id,
         account.cash_cents,
-        account.position_qty,
-        account.reserved_buy_cents,
-        account.reserved_sell_qty
+        account.reserved_buy_cents
       ]
+    );
+  }
+
+  async #persistHolding(tx, holding) {
+    await tx.query(
+      `UPDATE account_holdings
+       SET position_qty = $3,
+           reserved_sell_qty = $4,
+           updated_at = NOW()
+       WHERE participant_id = $1
+         AND session_stock_id = $2`,
+      [holding.participant_id, holding.session_stock_id, holding.position_qty, holding.reserved_sell_qty]
     );
   }
 
@@ -854,6 +1027,27 @@ class MatchingEngine {
     }
 
     return cloneRow(order);
+  }
+
+  async #loadSessionStockForUpdate(tx, sessionStockId, sessionId) {
+    const result = await tx.query(
+      `SELECT *
+       FROM session_stocks
+       WHERE id = $1
+         AND session_id = $2
+       FOR UPDATE`,
+      [sessionStockId, sessionId]
+    );
+
+    const sessionStock = result.rows[0];
+    if (!sessionStock) {
+      throw new EngineError('INVALID_STOCK_ID', 'The stock does not exist for this session.', {
+        sessionId,
+        sessionStockId
+      });
+    }
+
+    return sessionStock;
   }
 }
 

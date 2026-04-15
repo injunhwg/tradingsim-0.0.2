@@ -11,6 +11,7 @@ const {
   DEFAULT_GAME_DURATION_SECONDS,
   DEFAULT_PEEK_PRICE_CENTS,
   DEFAULT_REFERENCE_PRICE_CENTS,
+  buildTradableStocks,
   SAR_BONUS_CENTS,
   buildPublicInfoSchedule,
   computeBorrowFeeCents,
@@ -81,6 +82,25 @@ function formatSession(row, now = new Date()) {
   };
 }
 
+function formatSessionStock(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    stockKey: row.stock_key,
+    displayName: row.display_name,
+    sortOrder: row.sort_order,
+    referencePriceCents: row.reference_price_cents,
+    initialPositionQty: row.initial_position_qty,
+    liquidationValueCents: row.liquidation_value_cents ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function formatParticipant(row) {
   if (!row) {
     return null;
@@ -97,7 +117,23 @@ function formatParticipant(row) {
   };
 }
 
-function formatAccount(row) {
+function formatHolding(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    participantId: row.participant_id,
+    sessionStockId: row.session_stock_id,
+    stockKey: row.stock_key || null,
+    stockDisplayName: row.display_name || null,
+    positionQty: row.position_qty,
+    reservedSellQty: row.reserved_sell_qty,
+    updatedAt: row.updated_at
+  };
+}
+
+function formatAccount(row, holdings = []) {
   if (!row) {
     return null;
   }
@@ -105,9 +141,10 @@ function formatAccount(row) {
   return {
     participantId: row.participant_id,
     cashCents: row.cash_cents,
-    positionQty: row.position_qty,
+    positionQty: holdings.reduce((sum, holding) => sum + (Number(holding.positionQty) || 0), 0),
     reservedBuyCents: row.reserved_buy_cents,
-    reservedSellQty: row.reserved_sell_qty,
+    reservedSellQty: holdings.reduce((sum, holding) => sum + (Number(holding.reservedSellQty) || 0), 0),
+    holdings,
     updatedAt: row.updated_at
   };
 }
@@ -120,6 +157,9 @@ function formatOrder(row) {
   return {
     id: row.id,
     sessionId: row.session_id,
+    sessionStockId: row.session_stock_id,
+    stockKey: row.stock_key || null,
+    stockDisplayName: row.display_name || null,
     participantId: row.participant_id,
     side: row.side,
     orderType: row.order_type,
@@ -143,6 +183,9 @@ function formatFill(row) {
   return {
     id: row.id,
     sessionId: row.session_id,
+    sessionStockId: row.session_stock_id,
+    stockKey: row.stock_key || null,
+    stockDisplayName: row.display_name || null,
     buyOrderId: row.buy_order_id,
     sellOrderId: row.sell_order_id,
     aggressorOrderId: row.aggressor_order_id,
@@ -161,6 +204,9 @@ function formatAnnouncement(row) {
   return {
     id: row.id,
     sessionId: row.session_id,
+    sessionStockId: row.session_stock_id || null,
+    stockKey: row.stock_key || null,
+    stockDisplayName: row.display_name || null,
     actorParticipantId: row.actor_participant_id,
     announcementType: row.announcement_type || 'PUBLIC_INFO',
     message: row.message,
@@ -177,6 +223,9 @@ function formatScheduledPublicInfo(row) {
   return {
     id: row.id,
     sessionId: row.session_id,
+    sessionStockId: row.session_stock_id || null,
+    stockKey: row.stock_key || null,
+    stockDisplayName: row.display_name || null,
     infoKey: row.info_key,
     infoType: row.info_type,
     sequenceNo: row.sequence_no,
@@ -204,6 +253,9 @@ function formatPeek(row) {
   return {
     id: row.id,
     sessionId: row.session_id,
+    sessionStockId: row.session_stock_id || null,
+    stockKey: row.stock_key || null,
+    stockDisplayName: row.display_name || null,
     participantId: row.participant_id,
     priceCents: row.price_cents,
     createdAt: row.created_at,
@@ -243,6 +295,7 @@ class GameService {
 
   async initialize() {
     await this.engine.initialize();
+    await this.#ensureMultiStockData();
   }
 
   async restoreRuntimeState() {
@@ -274,7 +327,8 @@ class GameService {
           type: 'game.state',
           sessionId: payload.session.id,
           payload: {
-            session: payload.session
+            session: payload.session,
+            stocks: payload.stocks
           }
         })
       ]
@@ -352,8 +406,12 @@ class GameService {
 
     return {
       session: formatSession(session),
+      stocks: (await this.#getSessionStocks(session.id)).map((row) => formatSessionStock(row)),
       participant: formatParticipant(participantBundle.participant),
-      account: formatAccount(participantBundle.account)
+      account: formatAccount(
+        participantBundle.account,
+        (participantBundle.holdings || []).map((row) => formatHolding(row))
+      )
     };
   }
 
@@ -415,79 +473,46 @@ class GameService {
 
   async getOrderBookSnapshot(sessionId) {
     const session = await this.#loadSession(sessionId);
-    const [bidsResult, asksResult, recentTrades, announcements, stats, liquidation] = await Promise.all([
-      this.db.query(
-        `SELECT
-           limit_price_cents AS price_cents,
-           SUM(remaining_qty) AS total_qty,
-           COUNT(*) AS order_count
-         FROM orders
-         WHERE session_id = $1
-           AND side = 'BUY'
-           AND order_type = 'LIMIT'
-           AND status IN ('OPEN', 'PARTIALLY_FILLED')
-         GROUP BY limit_price_cents
-         ORDER BY limit_price_cents DESC
-         LIMIT $2`,
-        [sessionId, ORDER_BOOK_VISIBLE_LEVELS]
-      ),
-      this.db.query(
-        `SELECT
-           limit_price_cents AS price_cents,
-           SUM(remaining_qty) AS total_qty,
-           COUNT(*) AS order_count
-         FROM orders
-         WHERE session_id = $1
-           AND side = 'SELL'
-           AND order_type = 'LIMIT'
-           AND status IN ('OPEN', 'PARTIALLY_FILLED')
-         GROUP BY limit_price_cents
-         ORDER BY limit_price_cents ASC
-         LIMIT $2`,
-        [sessionId, ORDER_BOOK_VISIBLE_LEVELS]
-      ),
-      this.#getRecentFills(sessionId, this.config.RECENT_TRADES_LIMIT || 20),
+    const stocks = await this.#getSessionStocks(sessionId);
+    const [stockSnapshots, announcements, liquidation] = await Promise.all([
+      Promise.all(stocks.map((stock) => this.#getStockOrderBookSnapshot(session, stock))),
       this.#getAnnouncements(sessionId, this.config.ANNOUNCEMENT_HISTORY_LIMIT || 20),
-      this.#getMarketStats(session),
-      this.#getLiquidationSummary(session)
+      this.#getLiquidationSummary(session, stocks)
     ]);
 
     return {
       session: formatSession(session),
-      market: stats,
+      stocks: stocks.map((row) => formatSessionStock(row)),
       liquidation,
-      bids: bidsResult.rows.map((row) => ({
-        priceCents: row.price_cents,
-        totalQty: Number(row.total_qty),
-        orderCount: Number(row.order_count)
-      })),
-      asks: asksResult.rows.map((row) => ({
-        priceCents: row.price_cents,
-        totalQty: Number(row.total_qty),
-        orderCount: Number(row.order_count)
-      })),
-      recentTrades: recentTrades.map((row) => formatFill(row)),
+      stockSnapshots,
       announcements: announcements.map((row) => formatAnnouncement(row))
     };
   }
 
   async getPlayerAccountState(participantId, sessionId) {
     const participant = await this.#loadParticipant(participantId, sessionId);
+    const session = await this.#loadSession(sessionId);
+    const stocks = await this.#getSessionStocks(sessionId);
     const account = await this.engine.getAccount(participantId);
+    const holdings = await this.#getParticipantHoldings(participantId, sessionId);
     const [ordersResult, fillsResult, peeksResult] = await Promise.all([
       this.db.query(
-        `SELECT *
-         FROM orders
-         WHERE participant_id = $1
-         ORDER BY id DESC`,
+        `SELECT o.*, ss.stock_key, ss.display_name
+         FROM orders o
+         INNER JOIN session_stocks ss ON ss.id = o.session_stock_id
+         WHERE o.participant_id = $1
+         ORDER BY o.id DESC`,
         [participantId]
       ),
       this.db.query(
         `SELECT
            f.*,
+           ss.stock_key,
+           ss.display_name,
            buy_orders.participant_id AS buy_participant_id,
            sell_orders.participant_id AS sell_participant_id
          FROM fills f
+         INNER JOIN session_stocks ss ON ss.id = f.session_stock_id
          INNER JOIN orders buy_orders ON buy_orders.id = f.buy_order_id
          INNER JOIN orders sell_orders ON sell_orders.id = f.sell_order_id
          WHERE f.session_id = $1
@@ -499,8 +524,11 @@ class GameService {
       this.db.query(
         `SELECT
            pp.*,
+           ss.stock_key,
+           ss.display_name,
            sc.contribution_cents
          FROM private_peeks pp
+         INNER JOIN session_stocks ss ON ss.id = pp.session_stock_id
          LEFT JOIN session_cards sc ON sc.id = pp.card_id
          WHERE pp.participant_id = $1
          ORDER BY pp.id DESC
@@ -510,8 +538,10 @@ class GameService {
     ]);
 
     return {
+      session: formatSession(session),
+      stocks: stocks.map((row) => formatSessionStock(row)),
       participant: formatParticipant(participant),
-      account: formatAccount(account),
+      account: formatAccount(account, holdings),
       orders: ordersResult.rows.map((row) => formatOrder(row)),
       recentFills: fillsResult.rows.map((row) => ({
         ...formatFill(row),
@@ -523,17 +553,26 @@ class GameService {
 
   async getLeaderboard(sessionId) {
     const session = await this.#loadSession(sessionId);
-    const marketStats = await this.#getMarketStats(session);
-    const liquidationValueCents = session.liquidation_revealed_at ? session.liquidation_value_cents : null;
-    const markPriceCents = liquidationValueCents ?? marketStats.lastTradePriceCents ?? session.reference_price_cents;
-    const initialPortfolioValueCents = STARTING_CASH_CENTS + STARTING_POSITION_QTY * session.reference_price_cents;
+    const stocks = await this.#getSessionStocks(sessionId);
+    const markets = await Promise.all(
+      stocks.map(async (stock) => ({
+        stock,
+        market: await this.#getMarketStats(session, stock)
+      }))
+    );
+    const marketStatsByStockId = new Map(markets.map((entry) => [entry.stock.id, entry.market]));
+    const initialPortfolioValueCents =
+      STARTING_CASH_CENTS +
+      stocks.reduce(
+        (sum, stock) => sum + Number(stock.initial_position_qty || 0) * Number(stock.reference_price_cents || 0),
+        0
+      );
 
     const result = await this.db.query(
       `SELECT
          p.id AS participant_id,
          p.display_name,
-         a.cash_cents,
-         a.position_qty
+         a.cash_cents
        FROM participants p
        INNER JOIN accounts a ON a.participant_id = p.id
        WHERE p.session_id = $1
@@ -541,6 +580,13 @@ class GameService {
        ORDER BY p.id ASC`,
       [sessionId]
     );
+    const holdings = await this.#getStudentHoldings(sessionId);
+    const holdingsByParticipantId = holdings.reduce((map, holding) => {
+      const bucket = map.get(holding.participantId) || [];
+      bucket.push(holding);
+      map.set(holding.participantId, bucket);
+      return map;
+    }, new Map());
 
     const rows = result.rows.map((row) => ({
       participantId: row.participant_id,
@@ -552,18 +598,23 @@ class GameService {
       borrowingFeeCents: session.liquidation_revealed_at
         ? computeBorrowFeeCents(row.cash_cents, this.config.BORROW_INTEREST_BPS)
         : 0,
-      positionQty: row.position_qty,
-      markedPriceCents: markPriceCents,
+      holdings: holdingsByParticipantId.get(row.participant_id) || [],
       portfolioValueCents:
         (session.liquidation_revealed_at
           ? settleCashCents(row.cash_cents, this.config.BORROW_INTEREST_BPS)
           : row.cash_cents) +
-        row.position_qty * markPriceCents,
+        (holdingsByParticipantId.get(row.participant_id) || []).reduce((sum, holding) => {
+          const market = marketStatsByStockId.get(holding.sessionStockId);
+          return sum + holding.positionQty * (market?.markPriceCents ?? 0);
+        }, 0),
       returnBps: Math.round(
         (((session.liquidation_revealed_at
           ? settleCashCents(row.cash_cents, this.config.BORROW_INTEREST_BPS)
           : row.cash_cents) +
-          row.position_qty * markPriceCents -
+          (holdingsByParticipantId.get(row.participant_id) || []).reduce((sum, holding) => {
+            const market = marketStatsByStockId.get(holding.sessionStockId);
+            return sum + holding.positionQty * (market?.markPriceCents ?? 0);
+          }, 0) -
           initialPortfolioValueCents) *
           10000) /
           initialPortfolioValueCents
@@ -574,18 +625,25 @@ class GameService {
 
     return {
       session: formatSession(session),
-      market: marketStats,
-      liquidation: await this.#getLiquidationSummary(session),
+      stocks: stocks.map((row) => formatSessionStock(row)),
+      markets: markets.map((entry) => ({
+        stock: formatSessionStock(entry.stock),
+        market: entry.market
+      })),
+      liquidation: await this.#getLiquidationSummary(session, stocks),
       leaderboard: rows.map((row, index) => ({
         ...row,
+        positionQty: row.holdings.reduce((sum, holding) => sum + holding.positionQty, 0),
         rank: index + 1
       }))
     };
   }
 
-  async submitOrder({ sessionId, participantId, idempotencyKey, side, orderType, quantity, limitPriceCents }) {
+  async submitOrder({ sessionId, participantId, sessionStockId, idempotencyKey, side, orderType, quantity, limitPriceCents }) {
+    const resolvedStock = await this.#resolveRequestedStock(sessionId, sessionStockId);
     const response = await this.engine.submitOrder({
       sessionId,
+      sessionStockId: resolvedStock.id,
       participantId,
       idempotencyKey,
       side,
@@ -635,8 +693,9 @@ class GameService {
     };
   }
 
-  async purchasePeek({ sessionId, participantId }) {
+  async purchasePeek({ sessionId, participantId, sessionStockId }) {
     const peekPriceCents = this.config.PEEK_PRICE_CENTS || DEFAULT_PEEK_PRICE_CENTS;
+    const resolvedStock = await this.#resolveRequestedStock(sessionId, sessionStockId);
     const peekResult = await this.engine.lockManager.withLock(`session:${sessionId}`, async () =>
       this.db.withTransaction(async (tx) => {
         const session = await this.#loadSessionForUpdate(tx, sessionId);
@@ -662,14 +721,16 @@ class GameService {
           throw new HttpError(409, 'BORROW_LIMIT_BREACH', 'Buying this peek would exceed the borrowing limit.');
         }
 
+        const sessionStock = await this.#loadSessionStockForUpdateTx(tx, resolvedStock.id, sessionId);
         const activeCardsResult = await tx.query(
           `SELECT *
            FROM session_cards
            WHERE session_id = $1
+             AND session_stock_id = $2
              AND state = 'ACTIVE'
            ORDER BY id ASC
            FOR UPDATE`,
-          [sessionId]
+          [sessionId, sessionStock.id]
         );
         const chosenCards = sampleWithoutReplacement(activeCardsResult.rows, 3);
         if (chosenCards.length < 3) {
@@ -682,10 +743,10 @@ class GameService {
         };
 
         const insertedPeek = await tx.query(
-          `INSERT INTO private_peeks (session_id, participant_id, card_id, price_cents, payload_json)
-           VALUES ($1, $2, NULL, $3, $4::jsonb)
+          `INSERT INTO private_peeks (session_id, session_stock_id, participant_id, card_id, price_cents, payload_json)
+           VALUES ($1, $2, $3, NULL, $4, $5::jsonb)
            RETURNING *`,
-          [sessionId, participantId, peekPriceCents, JSON.stringify(payloadJson)]
+          [sessionId, sessionStock.id, participantId, peekPriceCents, JSON.stringify(payloadJson)]
         );
 
         await tx.query(
@@ -708,6 +769,8 @@ class GameService {
           account: updatedAccount.rows[0],
           peek: {
             ...insertedPeek.rows[0],
+            stock_key: sessionStock.stock_key,
+            display_name: sessionStock.display_name,
             payload_json: payloadJson
           }
         };
@@ -726,7 +789,7 @@ class GameService {
 
     return {
       peek: formatPeek(peekResult.peek),
-      account: formatAccount(peekResult.account),
+      account: formatAccount(peekResult.account, accountState.account.holdings),
       events: [
         makeEvent({
           type: 'account.updated',
@@ -806,7 +869,8 @@ class GameService {
         type: 'game.state',
         sessionId,
         payload: {
-          session: formatSession(session)
+          session: formatSession(session),
+          stocks: (await this.#getSessionStocks(sessionId)).map((row) => formatSessionStock(row))
         }
       })
     ];
@@ -829,58 +893,77 @@ class GameService {
 
   async getStudents(sessionId, connectedParticipantIds = []) {
     const session = await this.#loadSession(sessionId);
+    const stocks = await this.#getSessionStocks(sessionId);
     const connectedSet = new Set(connectedParticipantIds);
-    const result = await this.db.query(
+    const studentsResult = await this.db.query(
       `SELECT
          p.id,
          p.display_name,
          p.created_at,
          a.cash_cents,
-         a.position_qty,
-         a.reserved_buy_cents,
-         a.reserved_sell_qty,
-         COUNT(o.id) FILTER (WHERE o.status IN ('OPEN', 'PARTIALLY_FILLED')) AS open_order_count
+         a.reserved_buy_cents
        FROM participants p
        INNER JOIN accounts a ON a.participant_id = p.id
-       LEFT JOIN orders o ON o.participant_id = p.id
        WHERE p.session_id = $1
          AND p.role = 'STUDENT'
-       GROUP BY p.id, p.display_name, p.created_at, a.cash_cents, a.position_qty, a.reserved_buy_cents, a.reserved_sell_qty
        ORDER BY p.display_name ASC`,
       [sessionId]
+    );
+    const [holdings, openOrdersResult] = await Promise.all([
+      this.#getStudentHoldings(sessionId),
+      this.db.query(
+        `SELECT participant_id, COUNT(*) AS open_order_count
+         FROM orders
+         WHERE session_id = $1
+           AND status IN ('OPEN', 'PARTIALLY_FILLED')
+         GROUP BY participant_id`,
+        [sessionId]
+      )
+    ]);
+    const holdingsByParticipantId = holdings.reduce((map, holding) => {
+      const bucket = map.get(holding.participantId) || [];
+      bucket.push(holding);
+      map.set(holding.participantId, bucket);
+      return map;
+    }, new Map());
+    const openOrdersByParticipantId = new Map(
+      openOrdersResult.rows.map((row) => [row.participant_id, Number(row.open_order_count || 0)])
     );
 
     return {
       session: formatSession(session),
-      students: result.rows.map((row) => ({
+      stocks: stocks.map((row) => formatSessionStock(row)),
+      students: studentsResult.rows.map((row) => {
+        const studentHoldings = holdingsByParticipantId.get(row.id) || [];
+        return {
         participantId: row.id,
         displayName: row.display_name,
         createdAt: row.created_at,
         cashCents: row.cash_cents,
-        positionQty: row.position_qty,
+        positionQty: studentHoldings.reduce((sum, holding) => sum + holding.positionQty, 0),
+        holdings: studentHoldings,
         reservedBuyCents: row.reserved_buy_cents,
-        reservedSellQty: row.reserved_sell_qty,
-        openOrderCount: Number(row.open_order_count || 0),
+        reservedSellQty: studentHoldings.reduce((sum, holding) => sum + holding.reservedSellQty, 0),
+        openOrderCount: openOrdersByParticipantId.get(row.id) || 0,
         connected: connectedSet.has(row.id)
-      }))
+      };
+      })
     };
   }
 
   async getInstructorDashboard(sessionId, connectedParticipantIds = []) {
-    const [session, orderBook, leaderboard, students, publicInfoSchedule, liquidationComposition] = await Promise.all([
+    const [session, orderBook, leaderboard, students, publicInfoSchedule] = await Promise.all([
       this.getSessionState(sessionId),
       this.getOrderBookSnapshot(sessionId),
       this.getLeaderboard(sessionId),
       this.getStudents(sessionId, connectedParticipantIds),
-      this.#getScheduledPublicInfo(sessionId),
-      this.#getInstructorLiquidationComposition(sessionId)
+      this.#getScheduledPublicInfo(sessionId)
     ]);
 
     return {
       session: session.session,
-      market: orderBook.market,
+      stocks: orderBook.stocks,
       liquidation: orderBook.liquidation,
-      liquidationComposition,
       orderBook,
       leaderboard: leaderboard.leaderboard,
       students: students.students,
@@ -900,7 +983,17 @@ class GameService {
         return currentSession;
       }
 
-      const liquidationValueCents = await this.#getCurrentLiquidationValueCentsTx(tx, sessionId);
+      const liquidationValues = await this.#getCurrentLiquidationValuesByStockTx(tx, sessionId);
+      const liquidationValueCents = [...liquidationValues.values()].reduce((sum, value) => sum + value, 0);
+      for (const [sessionStockId, valueCents] of liquidationValues.entries()) {
+        await tx.query(
+          `UPDATE session_stocks
+           SET liquidation_value_cents = $2,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [sessionStockId, valueCents]
+        );
+      }
       const nextElapsedSeconds = this.#computeClosedFormElapsedSeconds(currentSession, new Date());
       const updated = await tx.query(
         `UPDATE market_sessions
@@ -926,6 +1019,7 @@ class GameService {
       return updated.rows[0];
     });
 
+    const stocks = (await this.#getSessionStocks(sessionId)).map((row) => formatSessionStock(row));
     const leaderboard = await this.getLeaderboard(sessionId);
     return {
       session: formatSession(session),
@@ -935,7 +1029,8 @@ class GameService {
           type: 'game.state',
           sessionId,
           payload: {
-            session: formatSession(session)
+            session: formatSession(session),
+            stocks
           }
         }),
         makeEvent({
@@ -949,8 +1044,10 @@ class GameService {
 
   async getSessionState(sessionId) {
     const session = await this.#loadSession(sessionId);
+    const stocks = await this.#getSessionStocks(sessionId);
     return {
-      session: formatSession(session)
+      session: formatSession(session),
+      stocks: stocks.map((row) => formatSessionStock(row))
     };
   }
 
@@ -976,7 +1073,8 @@ class GameService {
         type: 'game.state',
         sessionId: principal.sessionId,
         payload: {
-          session: snapshot.session
+          session: snapshot.session,
+          stocks: snapshot.stocks
         }
       }),
       orderBook: makeEvent({
@@ -1005,15 +1103,19 @@ class GameService {
 
   async getParticipantSummary(participantId, sessionId) {
     const participant = await this.#loadParticipant(participantId, sessionId);
+    const stocks = await this.#getSessionStocks(sessionId);
     return {
-      participant: formatParticipant(participant)
+      participant: formatParticipant(participant),
+      stocks: stocks.map((row) => formatSessionStock(row))
     };
   }
 
   async getAuthContext(authToken) {
     const principal = await this.authenticateParticipant(authToken);
+    const stocks = await this.#getSessionStocks(principal.sessionId);
     return {
-      principal
+      principal,
+      stocks: stocks.map((row) => formatSessionStock(row))
     };
   }
 
@@ -1051,78 +1153,115 @@ class GameService {
       );
       const session = sessionResult.rows[0];
 
+      const sessionStocks = [];
+      for (const stock of buildTradableStocks(resolvedReferencePriceCents)) {
+        const stockResult = await tx.query(
+          `INSERT INTO session_stocks (
+             session_id,
+             stock_key,
+             display_name,
+             sort_order,
+             reference_price_cents,
+             initial_position_qty
+           )
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING *`,
+          [
+            session.id,
+            stock.stockKey,
+            stock.displayName,
+            stock.sortOrder,
+            stock.referencePriceCents,
+            stock.initialPositionQty
+          ]
+        );
+        sessionStocks.push(stockResult.rows[0]);
+      }
+
       const instructor = await this.#insertParticipantWithAccount(tx, {
         sessionId: session.id,
+        sessionStocks,
         externalId: `instructor-${randomToken()}`,
         displayName: 'Instructor',
         role: 'INSTRUCTOR',
         authToken: randomToken()
       });
 
-      for (const card of createShuffledDeck()) {
-        await tx.query(
-          `INSERT INTO session_cards (
-             session_id,
-             deck_order,
-             rank,
-             suit,
-             color,
-             label,
-             base_value_cents,
-             contribution_cents,
-             state
-           )
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [
-            session.id,
-            card.deckOrder,
-            card.rank,
-            card.suit,
-            card.color,
-            card.label,
-            card.baseValueCents,
-            card.contributionCents,
-            card.state
-          ]
-        );
-      }
+      for (const sessionStock of sessionStocks) {
+        for (const card of createShuffledDeck()) {
+          await tx.query(
+            `INSERT INTO session_cards (
+               session_id,
+               session_stock_id,
+               deck_order,
+               rank,
+               suit,
+               color,
+               label,
+               base_value_cents,
+               contribution_cents,
+               state
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [
+              session.id,
+              sessionStock.id,
+              card.deckOrder,
+              card.rank,
+              card.suit,
+              card.color,
+              card.label,
+              card.baseValueCents,
+              card.contributionCents,
+              card.state
+            ]
+          );
+        }
 
-      for (const scheduledItem of buildPublicInfoSchedule(resolvedDurationSeconds)) {
-        await tx.query(
-          `INSERT INTO scheduled_public_info (
-             session_id,
-             info_key,
-             info_type,
-             sequence_no,
-             scheduled_offset_seconds
-           )
-           VALUES ($1, $2, $3, $4, $5)`,
-          [
-            session.id,
-            scheduledItem.infoKey,
-            scheduledItem.infoType,
-            scheduledItem.sequenceNo,
-            scheduledItem.scheduledOffsetSeconds
-          ]
-        );
+        for (const scheduledItem of buildPublicInfoSchedule(resolvedDurationSeconds)) {
+          await tx.query(
+            `INSERT INTO scheduled_public_info (
+               session_id,
+               session_stock_id,
+               info_key,
+               info_type,
+               sequence_no,
+               scheduled_offset_seconds
+             )
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [
+              session.id,
+              sessionStock.id,
+              `${sessionStock.stock_key}_${scheduledItem.infoKey}`,
+              scheduledItem.infoType,
+              scheduledItem.sequenceNo,
+              scheduledItem.scheduledOffsetSeconds
+            ]
+          );
+        }
       }
 
       return {
         session,
+        sessionStocks,
         instructor
       };
     });
 
     return {
       session: formatSession(bundle.session),
+      stocks: bundle.sessionStocks.map((row) => formatSessionStock(row)),
       instructor: {
         participant: formatParticipant(bundle.instructor.participant),
-        account: formatAccount(bundle.instructor.account)
+        account: formatAccount(
+          bundle.instructor.account,
+          bundle.instructor.holdings.map((row) => formatHolding(row))
+        )
       }
     };
   }
 
-  async #insertParticipantWithAccount(tx, { sessionId, externalId, displayName, role, authToken }) {
+  async #insertParticipantWithAccount(tx, { sessionId, sessionStocks, externalId, displayName, role, authToken }) {
     const participantResult = await tx.query(
       `INSERT INTO participants (session_id, external_id, display_name, role, auth_token)
        VALUES ($1, $2, $3, $4, $5)
@@ -1132,72 +1271,89 @@ class GameService {
     const participant = participantResult.rows[0];
 
     const accountResult = await tx.query(
-      `INSERT INTO accounts (participant_id, cash_cents, position_qty)
-       VALUES ($1, $2, $3)
+      `INSERT INTO accounts (participant_id, cash_cents, position_qty, reserved_sell_qty)
+       VALUES ($1, $2, 0, 0)
        RETURNING *`,
-      [participant.id, STARTING_CASH_CENTS, STARTING_POSITION_QTY]
+      [participant.id, STARTING_CASH_CENTS]
     );
+
+    const holdings = [];
+    for (const sessionStock of sessionStocks || []) {
+      const holdingResult = await tx.query(
+        `INSERT INTO account_holdings (
+           participant_id,
+           session_stock_id,
+           position_qty,
+           reserved_sell_qty
+         )
+         VALUES ($1, $2, $3, 0)
+         RETURNING *`,
+        [participant.id, sessionStock.id, sessionStock.initial_position_qty]
+      );
+      holdings.push(holdingResult.rows[0]);
+    }
 
     return {
       participant,
-      account: accountResult.rows[0]
+      account: accountResult.rows[0],
+      holdings
     };
   }
 
   async #getScheduledPublicInfo(sessionId) {
     const result = await this.db.query(
-      `SELECT *
-       FROM scheduled_public_info
-       WHERE session_id = $1
-       ORDER BY scheduled_offset_seconds ASC, id ASC`,
+      `SELECT spi.*, ss.stock_key, ss.display_name
+       FROM scheduled_public_info spi
+       INNER JOIN session_stocks ss ON ss.id = spi.session_stock_id
+       WHERE spi.session_id = $1
+       ORDER BY spi.scheduled_offset_seconds ASC, ss.sort_order ASC, spi.id ASC`,
       [sessionId]
     );
 
     return result.rows.map((row) => formatScheduledPublicInfo(row));
   }
 
-  async #getLiquidationSummary(session) {
+  async #getLiquidationSummary(session, sessionStocks = null) {
+    const stocks = sessionStocks || (await this.#getSessionStocks(session.id));
+
     if (!session?.liquidation_revealed_at) {
       return {
         revealed: false,
         valueCents: null,
         revealedAt: null,
-        cards: []
+        stocks: stocks.map((stock) => ({
+          stock: formatSessionStock(stock),
+          valueCents: null,
+          cards: []
+        }))
       };
     }
 
     const cardsResult = await this.db.query(
-      `SELECT *
-       FROM session_cards
-       WHERE session_id = $1
-         AND state = 'ACTIVE'
-       ORDER BY deck_order ASC`,
+      `SELECT sc.*, ss.stock_key, ss.display_name
+       FROM session_cards sc
+       INNER JOIN session_stocks ss ON ss.id = sc.session_stock_id
+       WHERE sc.session_id = $1
+         AND sc.state = 'ACTIVE'
+       ORDER BY ss.sort_order ASC, sc.deck_order ASC`,
       [session.id]
     );
+    const cardsByStockId = cardsResult.rows.reduce((map, row) => {
+      const bucket = map.get(row.session_stock_id) || [];
+      bucket.push(formatCard(row));
+      map.set(row.session_stock_id, bucket);
+      return map;
+    }, new Map());
 
     return {
       revealed: true,
       valueCents: session.liquidation_value_cents,
       revealedAt: session.liquidation_revealed_at,
-      cards: cardsResult.rows.map((row) => formatCard(row))
-    };
-  }
-
-  async #getInstructorLiquidationComposition(sessionId) {
-    const cardsResult = await this.db.query(
-      `SELECT *
-       FROM session_cards
-       WHERE session_id = $1
-         AND state = 'ACTIVE'
-       ORDER BY deck_order ASC`,
-      [sessionId]
-    );
-    const cards = cardsResult.rows.map((row) => formatCard(row));
-
-    return {
-      currentValueCents: sumCardContributionCents(cards),
-      cardCount: cards.length,
-      cards
+      stocks: stocks.map((stock) => ({
+        stock: formatSessionStock(stock),
+        valueCents: stock.liquidation_value_cents ?? null,
+        cards: cardsByStockId.get(stock.id) || []
+      }))
     };
   }
 
@@ -1207,10 +1363,13 @@ class GameService {
       const dueResult = await tx.query(
         `SELECT
            spi.*,
+           ss.stock_key,
+           ss.display_name,
            ms.started_at,
            ms.opened_at,
            ms.elapsed_open_seconds
          FROM scheduled_public_info spi
+         INNER JOIN session_stocks ss ON ss.id = spi.session_stock_id
          INNER JOIN market_sessions ms ON ms.id = spi.session_id
          WHERE spi.status = 'PENDING'
            AND ms.status IN ('OPEN', 'PAUSED')
@@ -1235,16 +1394,21 @@ class GameService {
         const announcementResult = await tx.query(
           `INSERT INTO announcements (
              session_id,
+             session_stock_id,
              actor_participant_id,
              message,
              announcement_type,
              payload_json
            )
-           VALUES ($1, NULL, $2, $3, $4::jsonb)
+           VALUES ($1, $2, NULL, $3, $4, $5::jsonb)
            RETURNING *`,
-          [row.session_id, release.message, row.info_type, JSON.stringify(release.publicPayload)]
+          [row.session_id, row.session_stock_id, release.message, row.info_type, JSON.stringify(release.publicPayload)]
         );
-        const announcement = announcementResult.rows[0];
+        const announcement = {
+          ...announcementResult.rows[0],
+          stock_key: row.stock_key,
+          display_name: row.display_name
+        };
 
         await tx.query(
           `UPDATE scheduled_public_info
@@ -1293,7 +1457,17 @@ class GameService {
           continue;
         }
 
-        const liquidationValueCents = await this.#getCurrentLiquidationValueCentsTx(tx, session.id);
+        const liquidationValues = await this.#getCurrentLiquidationValuesByStockTx(tx, session.id);
+        const liquidationValueCents = [...liquidationValues.values()].reduce((sum, value) => sum + value, 0);
+        for (const [sessionStockId, valueCents] of liquidationValues.entries()) {
+          await tx.query(
+            `UPDATE session_stocks
+             SET liquidation_value_cents = $2,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [sessionStockId, valueCents]
+          );
+        }
         const closedResult = await tx.query(
           `UPDATE market_sessions
            SET status = 'CLOSED',
@@ -1324,13 +1498,15 @@ class GameService {
     const events = [];
 
     for (const session of finalizedSessions) {
+      const stocks = (await this.#getSessionStocks(session.id)).map((row) => formatSessionStock(row));
       const leaderboard = await this.getLeaderboard(session.id);
       events.push(
         makeEvent({
           type: 'game.state',
           sessionId: session.id,
           payload: {
-            session: formatSession(session)
+            session: formatSession(session),
+            stocks
           }
         }),
         makeEvent({
@@ -1349,23 +1525,29 @@ class GameService {
       `SELECT *
        FROM session_cards
        WHERE session_id = $1
+         AND session_stock_id = $2
          AND state = 'ACTIVE'
        ORDER BY id ASC
        FOR UPDATE`,
-      [scheduledInfo.session_id]
+      [scheduledInfo.session_id, scheduledInfo.session_stock_id]
     );
     const chosenCards = sampleWithoutReplacement(activeCardsResult.rows, 5);
     const fiveCardSumCents = chosenCards.reduce((sum, card) => sum + card.contribution_cents, 0);
     const reportTotalCents = fiveCardSumCents + SAR_BONUS_CENTS;
 
     return {
-      message: formatSarMessage(scheduledInfo.sequence_no, reportTotalCents),
+      message: formatSarMessage(scheduledInfo.sequence_no, reportTotalCents, scheduledInfo.display_name),
       publicPayload: {
+        sessionStockId: scheduledInfo.session_stock_id,
+        stockKey: scheduledInfo.stock_key,
+        stockDisplayName: scheduledInfo.display_name,
         infoType: 'SAR',
         sequenceNo: scheduledInfo.sequence_no,
         reportTotalCents
       },
       auditPayload: {
+        sessionStockId: scheduledInfo.session_stock_id,
+        stockKey: scheduledInfo.stock_key,
         infoType: 'SAR',
         sequenceNo: scheduledInfo.sequence_no,
         reportTotalCents,
@@ -1379,20 +1561,22 @@ class GameService {
       `SELECT *
        FROM session_cards
        WHERE session_id = $1
+         AND session_stock_id = $2
          AND state = 'ACTIVE'
        ORDER BY id ASC
        FOR UPDATE`,
-      [scheduledInfo.session_id]
+      [scheduledInfo.session_id, scheduledInfo.session_stock_id]
     );
     const deckCardResult = await tx.query(
       `SELECT *
        FROM session_cards
        WHERE session_id = $1
+         AND session_stock_id = $2
          AND state = 'DECK'
        ORDER BY deck_order ASC
        LIMIT 1
        FOR UPDATE`,
-      [scheduledInfo.session_id]
+      [scheduledInfo.session_id, scheduledInfo.session_stock_id]
     );
 
     const removedCard = pickRandomItem(activeCardsResult.rows);
@@ -1418,13 +1602,18 @@ class GameService {
 
     const deltaCents = addedCard.contribution_cents - removedCard.contribution_cents;
     return {
-      message: formatEpsMessage(scheduledInfo.sequence_no, deltaCents),
+      message: formatEpsMessage(scheduledInfo.sequence_no, deltaCents, scheduledInfo.display_name),
       publicPayload: {
+        sessionStockId: scheduledInfo.session_stock_id,
+        stockKey: scheduledInfo.stock_key,
+        stockDisplayName: scheduledInfo.display_name,
         infoType: 'EPS',
         sequenceNo: scheduledInfo.sequence_no,
         deltaCents
       },
       auditPayload: {
+        sessionStockId: scheduledInfo.session_stock_id,
+        stockKey: scheduledInfo.stock_key,
         infoType: 'EPS',
         sequenceNo: scheduledInfo.sequence_no,
         deltaCents,
@@ -1434,14 +1623,24 @@ class GameService {
     };
   }
 
-  async #getRecentFills(sessionId, limit) {
+  async #getRecentFills(sessionId, limit, sessionStockId = null) {
+    const params = [sessionId];
+    let stockFilter = '';
+    if (Number.isInteger(sessionStockId)) {
+      params.push(sessionStockId);
+      stockFilter = ` AND f.session_stock_id = $2`;
+    }
+
+    params.push(limit);
     const result = await this.db.query(
-      `SELECT *
-       FROM fills
-       WHERE session_id = $1
+      `SELECT f.*, ss.stock_key, ss.display_name
+       FROM fills f
+       INNER JOIN session_stocks ss ON ss.id = f.session_stock_id
+       WHERE f.session_id = $1
+       ${stockFilter}
        ORDER BY id DESC
-       LIMIT $2`,
-      [sessionId, limit]
+       LIMIT $${params.length}`,
+      params
     );
 
     return result.rows.reverse();
@@ -1449,9 +1648,10 @@ class GameService {
 
   async #getAnnouncements(sessionId, limit) {
     const result = await this.db.query(
-      `SELECT *
-       FROM announcements
-       WHERE session_id = $1
+      `SELECT a.*, ss.stock_key, ss.display_name
+       FROM announcements a
+       LEFT JOIN session_stocks ss ON ss.id = a.session_stock_id
+       WHERE a.session_id = $1
        ORDER BY id DESC
        LIMIT $2`,
       [sessionId, limit]
@@ -1460,26 +1660,30 @@ class GameService {
     return result.rows.reverse();
   }
 
-  async #getMarketStats(session) {
+  async #getMarketStats(session, stock) {
     const [lastFillResult, volumeResult] = await Promise.all([
       this.db.query(
         `SELECT price_cents
          FROM fills
          WHERE session_id = $1
+           AND session_stock_id = $2
          ORDER BY id DESC
          LIMIT 1`,
-        [session.id]
+        [session.id, stock.id]
       ),
       this.db.query(
         `SELECT COALESCE(SUM(qty), 0) AS traded_qty
          FROM fills
-         WHERE session_id = $1`,
-        [session.id]
+         WHERE session_id = $1
+           AND session_stock_id = $2`,
+        [session.id, stock.id]
       )
     ]);
 
-    const lastTradePriceCents = lastFillResult.rows[0]?.price_cents ?? session.reference_price_cents;
-    const markPriceCents = session.liquidation_revealed_at ? session.liquidation_value_cents : lastTradePriceCents;
+    const lastTradePriceCents = lastFillResult.rows[0]?.price_cents ?? stock.reference_price_cents;
+    const markPriceCents = session.liquidation_revealed_at
+      ? stock.liquidation_value_cents ?? lastTradePriceCents
+      : lastTradePriceCents;
     return {
       lastTradePriceCents,
       totalVolumeQty: Number(volumeResult.rows[0]?.traded_qty || 0),
@@ -1491,7 +1695,8 @@ class GameService {
     const snapshot = await this.getOrderBookSnapshot(sessionId);
     const marketState = {
       session: snapshot.session,
-      market: snapshot.market
+      stocks: snapshot.stocks,
+      stockSnapshots: snapshot.stockSnapshots
     };
     const events = [
       makeEvent({
@@ -1600,8 +1805,365 @@ class GameService {
     return events;
   }
 
+  async #ensureMultiStockData() {
+    const sessionsResult = await this.db.query(
+      `SELECT *
+       FROM market_sessions
+       ORDER BY id ASC`
+    );
+
+    for (const session of sessionsResult.rows) {
+      await this.db.withTransaction(async (tx) => {
+        const configuredStocks = buildTradableStocks(session.reference_price_cents);
+        const existingStocksResult = await tx.query(
+          `SELECT *
+           FROM session_stocks
+           WHERE session_id = $1
+           ORDER BY sort_order ASC, id ASC
+           FOR UPDATE`,
+          [session.id]
+        );
+
+        const existingByKey = new Map(existingStocksResult.rows.map((row) => [row.stock_key, row]));
+        for (const configuredStock of configuredStocks) {
+          if (existingByKey.has(configuredStock.stockKey)) {
+            continue;
+          }
+
+          const insertedStock = await tx.query(
+            `INSERT INTO session_stocks (
+               session_id,
+               stock_key,
+               display_name,
+               sort_order,
+               reference_price_cents,
+               initial_position_qty
+             )
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING *`,
+            [
+              session.id,
+              configuredStock.stockKey,
+              configuredStock.displayName,
+              configuredStock.sortOrder,
+              configuredStock.referencePriceCents,
+              configuredStock.initialPositionQty
+            ]
+          );
+          existingByKey.set(configuredStock.stockKey, insertedStock.rows[0]);
+        }
+
+        const stocks = [...existingByKey.values()].sort(
+          (left, right) => left.sort_order - right.sort_order || left.id - right.id
+        );
+        const primaryStock = stocks[0];
+        if (!primaryStock) {
+          return;
+        }
+
+        await tx.query(
+          `UPDATE session_cards
+           SET session_stock_id = $2
+           WHERE session_id = $1
+             AND session_stock_id IS NULL`,
+          [session.id, primaryStock.id]
+        );
+        await tx.query(
+          `UPDATE orders
+           SET session_stock_id = $2
+           WHERE session_id = $1
+             AND session_stock_id IS NULL`,
+          [session.id, primaryStock.id]
+        );
+        await tx.query(
+          `UPDATE fills
+           SET session_stock_id = $2
+           WHERE session_id = $1
+             AND session_stock_id IS NULL`,
+          [session.id, primaryStock.id]
+        );
+        await tx.query(
+          `UPDATE private_peeks
+           SET session_stock_id = $2
+           WHERE session_id = $1
+             AND session_stock_id IS NULL`,
+          [session.id, primaryStock.id]
+        );
+        await tx.query(
+          `UPDATE announcements
+           SET session_stock_id = $2
+           WHERE session_id = $1
+             AND session_stock_id IS NULL
+             AND announcement_type IN ('SAR', 'EPS')`,
+          [session.id, primaryStock.id]
+        );
+        await tx.query(
+          `UPDATE scheduled_public_info
+           SET session_stock_id = $2,
+               info_key = $3 || info_key
+           WHERE session_id = $1
+             AND session_stock_id IS NULL`,
+          [session.id, primaryStock.id, `${primaryStock.stock_key}_`]
+        );
+
+        for (const stock of stocks) {
+          const cardCountResult = await tx.query(
+            `SELECT COUNT(*) AS count
+             FROM session_cards
+             WHERE session_stock_id = $1`,
+            [stock.id]
+          );
+          if (Number(cardCountResult.rows[0]?.count || 0) === 0) {
+            for (const card of createShuffledDeck()) {
+              await tx.query(
+                `INSERT INTO session_cards (
+                   session_id,
+                   session_stock_id,
+                   deck_order,
+                   rank,
+                   suit,
+                   color,
+                   label,
+                   base_value_cents,
+                   contribution_cents,
+                   state
+                 )
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+                [
+                  session.id,
+                  stock.id,
+                  card.deckOrder,
+                  card.rank,
+                  card.suit,
+                  card.color,
+                  card.label,
+                  card.baseValueCents,
+                  card.contributionCents,
+                  card.state
+                ]
+              );
+            }
+          }
+
+          const scheduledInfoResult = await tx.query(
+            `SELECT info_type, sequence_no
+             FROM scheduled_public_info
+             WHERE session_stock_id = $1`,
+            [stock.id]
+          );
+          const existingInfoKeys = new Set(
+            scheduledInfoResult.rows.map((row) => `${row.info_type}:${row.sequence_no}`)
+          );
+          for (const scheduledItem of buildPublicInfoSchedule(session.total_duration_seconds || DEFAULT_GAME_DURATION_SECONDS)) {
+            const mapKey = `${scheduledItem.infoType}:${scheduledItem.sequenceNo}`;
+            if (existingInfoKeys.has(mapKey)) {
+              continue;
+            }
+
+            await tx.query(
+              `INSERT INTO scheduled_public_info (
+                 session_id,
+                 session_stock_id,
+                 info_key,
+                 info_type,
+                 sequence_no,
+                 scheduled_offset_seconds
+               )
+               VALUES ($1, $2, $3, $4, $5, $6)`,
+              [
+                session.id,
+                stock.id,
+                `${stock.stock_key}_${scheduledItem.infoKey}`,
+                scheduledItem.infoType,
+                scheduledItem.sequenceNo,
+                scheduledItem.scheduledOffsetSeconds
+              ]
+            );
+          }
+        }
+
+        const participantsResult = await tx.query(
+          `SELECT
+             p.id AS participant_id,
+             a.position_qty,
+             a.reserved_sell_qty
+           FROM participants p
+           INNER JOIN accounts a ON a.participant_id = p.id
+           WHERE p.session_id = $1
+           ORDER BY p.id ASC
+           FOR UPDATE`,
+          [session.id]
+        );
+
+        for (const participant of participantsResult.rows) {
+          const holdingsResult = await tx.query(
+            `SELECT session_stock_id
+             FROM account_holdings
+             WHERE participant_id = $1
+             FOR UPDATE`,
+            [participant.participant_id]
+          );
+          const existingHoldingIds = new Set(holdingsResult.rows.map((row) => row.session_stock_id));
+          const isLegacyParticipant = existingHoldingIds.size === 0;
+
+          for (const stock of stocks) {
+            if (existingHoldingIds.has(stock.id)) {
+              continue;
+            }
+
+            const initialPositionQty = isLegacyParticipant
+              ? stock.id === primaryStock.id
+                ? participant.position_qty
+                : 0
+              : 0;
+            const reservedSellQty = isLegacyParticipant && stock.id === primaryStock.id ? participant.reserved_sell_qty : 0;
+
+            await tx.query(
+              `INSERT INTO account_holdings (
+                 participant_id,
+                 session_stock_id,
+                 position_qty,
+                 reserved_sell_qty
+               )
+               VALUES ($1, $2, $3, $4)`,
+              [participant.participant_id, stock.id, initialPositionQty, reservedSellQty]
+            );
+          }
+        }
+
+        if (session.liquidation_revealed_at) {
+          const liquidationValues = await this.#getCurrentLiquidationValuesByStockTx(tx, session.id);
+          for (const [sessionStockId, valueCents] of liquidationValues.entries()) {
+            await tx.query(
+              `UPDATE session_stocks
+               SET liquidation_value_cents = $2,
+                   updated_at = NOW()
+               WHERE id = $1`,
+              [sessionStockId, valueCents]
+            );
+          }
+        }
+      });
+    }
+  }
+
   async close() {
     await this.engine.close();
+  }
+
+  async #getSessionStocks(sessionId) {
+    const result = await this.db.query(
+      `SELECT *
+       FROM session_stocks
+       WHERE session_id = $1
+       ORDER BY sort_order ASC, id ASC`,
+      [sessionId]
+    );
+
+    return result.rows;
+  }
+
+  async #getParticipantHoldings(participantId, sessionId) {
+    const result = await this.db.query(
+      `SELECT ah.*, ss.stock_key, ss.display_name
+       FROM account_holdings ah
+       INNER JOIN session_stocks ss ON ss.id = ah.session_stock_id
+       INNER JOIN participants p ON p.id = ah.participant_id
+       WHERE ah.participant_id = $1
+         AND p.session_id = $2
+       ORDER BY ss.sort_order ASC, ah.session_stock_id ASC`,
+      [participantId, sessionId]
+    );
+
+    return result.rows.map((row) => formatHolding(row));
+  }
+
+  async #getStudentHoldings(sessionId) {
+    const result = await this.db.query(
+      `SELECT ah.*, ss.stock_key, ss.display_name
+       FROM account_holdings ah
+       INNER JOIN participants p ON p.id = ah.participant_id
+       INNER JOIN session_stocks ss ON ss.id = ah.session_stock_id
+       WHERE p.session_id = $1
+         AND p.role = 'STUDENT'
+       ORDER BY p.id ASC, ss.sort_order ASC, ah.session_stock_id ASC`,
+      [sessionId]
+    );
+
+    return result.rows.map((row) => formatHolding(row));
+  }
+
+  async #resolveRequestedStock(sessionId, sessionStockId = null) {
+    const stocks = await this.#getSessionStocks(sessionId);
+    if (stocks.length === 0) {
+      throw new HttpError(404, 'INVALID_STOCK_ID', '이 세션에 거래 가능한 종목이 없습니다.');
+    }
+
+    if (Number.isInteger(sessionStockId)) {
+      const stock = stocks.find((entry) => entry.id === sessionStockId);
+      if (!stock) {
+        throw new HttpError(404, 'INVALID_STOCK_ID', '선택한 종목을 찾을 수 없습니다.');
+      }
+
+      return stock;
+    }
+
+    return stocks[0];
+  }
+
+  async #getStockOrderBookSnapshot(session, stock) {
+    const [bidsResult, asksResult, recentTrades, market] = await Promise.all([
+      this.db.query(
+        `SELECT
+           limit_price_cents AS price_cents,
+           SUM(remaining_qty) AS total_qty,
+           COUNT(*) AS order_count
+         FROM orders
+         WHERE session_id = $1
+           AND session_stock_id = $2
+           AND side = 'BUY'
+           AND order_type = 'LIMIT'
+           AND status IN ('OPEN', 'PARTIALLY_FILLED')
+         GROUP BY limit_price_cents
+         ORDER BY limit_price_cents DESC
+         LIMIT $3`,
+        [session.id, stock.id, ORDER_BOOK_VISIBLE_LEVELS]
+      ),
+      this.db.query(
+        `SELECT
+           limit_price_cents AS price_cents,
+           SUM(remaining_qty) AS total_qty,
+           COUNT(*) AS order_count
+         FROM orders
+         WHERE session_id = $1
+           AND session_stock_id = $2
+           AND side = 'SELL'
+           AND order_type = 'LIMIT'
+           AND status IN ('OPEN', 'PARTIALLY_FILLED')
+         GROUP BY limit_price_cents
+         ORDER BY limit_price_cents ASC
+         LIMIT $3`,
+        [session.id, stock.id, ORDER_BOOK_VISIBLE_LEVELS]
+      ),
+      this.#getRecentFills(session.id, this.config.RECENT_TRADES_LIMIT || 20, stock.id),
+      this.#getMarketStats(session, stock)
+    ]);
+
+    return {
+      stock: formatSessionStock(stock),
+      market,
+      bids: bidsResult.rows.map((row) => ({
+        priceCents: row.price_cents,
+        totalQty: Number(row.total_qty),
+        orderCount: Number(row.order_count)
+      })),
+      asks: asksResult.rows.map((row) => ({
+        priceCents: row.price_cents,
+        totalQty: Number(row.total_qty),
+        orderCount: Number(row.order_count)
+      })),
+      recentTrades: recentTrades.map((row) => formatFill(row))
+    };
   }
 
   async #loadSessionForUpdate(tx, sessionId) {
@@ -1639,16 +2201,37 @@ class GameService {
     return participant;
   }
 
-  async #getCurrentLiquidationValueCentsTx(tx, sessionId) {
+  async #loadSessionStockForUpdateTx(tx, sessionStockId, sessionId) {
     const result = await tx.query(
-      `SELECT COALESCE(SUM(contribution_cents), 0) AS liquidation_value_cents
+      `SELECT *
+       FROM session_stocks
+       WHERE id = $1
+         AND session_id = $2
+       FOR UPDATE`,
+      [sessionStockId, sessionId]
+    );
+
+    const sessionStock = result.rows[0];
+    if (!sessionStock) {
+      throw new HttpError(404, 'INVALID_STOCK_ID', '선택한 종목을 찾을 수 없습니다.');
+    }
+
+    return sessionStock;
+  }
+
+  async #getCurrentLiquidationValuesByStockTx(tx, sessionId) {
+    const result = await tx.query(
+      `SELECT session_stock_id, COALESCE(SUM(contribution_cents), 0) AS liquidation_value_cents
        FROM session_cards
        WHERE session_id = $1
-         AND state = 'ACTIVE'`,
+         AND state = 'ACTIVE'
+       GROUP BY session_stock_id`,
       [sessionId]
     );
 
-    return Number(result.rows[0]?.liquidation_value_cents || 0);
+    return new Map(
+      result.rows.map((row) => [Number(row.session_stock_id), Number(row.liquidation_value_cents || 0)])
+    );
   }
 
   #computeClosedFormElapsedSeconds(session, now = new Date()) {
@@ -1698,6 +2281,7 @@ function translateError(error) {
   if (error instanceof EngineError) {
     const statusByCode = {
       INVALID_SESSION_ID: 400,
+      INVALID_STOCK_ID: 400,
       INVALID_PARTICIPANT_ID: 400,
       INVALID_IDEMPOTENCY_KEY: 400,
       INVALID_SIDE: 400,

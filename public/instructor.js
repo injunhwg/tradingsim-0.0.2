@@ -7,14 +7,13 @@ import {
   dollarsToCents,
   formatErrorMessage,
   formatDuration,
-  formatCardColor,
   formatMoney,
   formatPublicInfoType,
   formatScheduleStatus,
   formatSessionStatus,
   formatPercentFromBps,
   formatPrice,
-  formatSignedMoney,
+  formatStockLabel,
   formatTime,
   hidePanel,
   readStorage,
@@ -43,6 +42,8 @@ const dom = {
   pauseButton: document.querySelector('#session-pause'),
   closeButton: document.querySelector('#session-close'),
   finalizeButton: document.querySelector('#session-finalize'),
+  stockSelect: document.querySelector('#dashboard-stock-select'),
+  selectedStock: document.querySelector('#dashboard-selected-stock'),
   sessionName: document.querySelector('#dashboard-session-name'),
   joinCode: document.querySelector('#dashboard-join-code'),
   sessionState: document.querySelector('#dashboard-session-state'),
@@ -51,10 +52,8 @@ const dom = {
   lastTrade: document.querySelector('#dashboard-last-trade'),
   timeRemaining: document.querySelector('#dashboard-time-remaining'),
   liquidation: document.querySelector('#dashboard-liquidation'),
-  cardTotal: document.querySelector('#dashboard-card-total'),
   students: document.querySelector('#dashboard-students'),
   publicInfoSchedule: document.querySelector('#public-info-schedule'),
-  cards: document.querySelector('#dashboard-cards'),
   leaderboard: document.querySelector('#dashboard-leaderboard'),
   orderBook: document.querySelector('#dashboard-order-book'),
   trades: document.querySelector('#dashboard-trades'),
@@ -66,6 +65,7 @@ const state = {
   bootstrapSecret: readStorage(STORAGE_KEYS.bootstrapSecret),
   me: null,
   dashboard: null,
+  selectedStockId: null,
   dashboardSnapshotAt: 0
 };
 
@@ -102,6 +102,35 @@ function clearError() {
   hidePanel(dom.error);
 }
 
+function syncSelectedStock(preferredStockId = state.selectedStockId) {
+  const stocks = state.dashboard?.stocks || [];
+  const availableIds = new Set(stocks.map((stock) => stock.id));
+  state.selectedStockId = availableIds.has(preferredStockId) ? preferredStockId : stocks[0]?.id || null;
+
+  const selectedValue = state.selectedStockId ? String(state.selectedStockId) : '';
+  if (dom.stockSelect.value !== selectedValue) {
+    dom.stockSelect.value = selectedValue;
+  }
+}
+
+function renderStockOptions() {
+  const stocks = state.dashboard?.stocks || [];
+  dom.stockSelect.innerHTML = stocks
+    .map((stock) => `<option value="${stock.id}">${formatStockLabel(stock)}</option>`)
+    .join('');
+  syncSelectedStock(state.selectedStockId);
+}
+
+function getSelectedStock() {
+  return state.dashboard?.stocks?.find((stock) => stock.id === state.selectedStockId) || state.dashboard?.stocks?.[0] || null;
+}
+
+function getSelectedSnapshot() {
+  return state.dashboard?.orderBook?.stockSnapshots?.find((snapshot) => snapshot.stock?.id === state.selectedStockId)
+    || state.dashboard?.orderBook?.stockSnapshots?.[0]
+    || null;
+}
+
 function getLiveRemainingSeconds() {
   const remainingSeconds = Number(state.dashboard?.session?.remainingSeconds || 0);
   if (state.dashboard?.session?.status !== 'OPEN') {
@@ -110,6 +139,21 @@ function getLiveRemainingSeconds() {
 
   const elapsedSinceSnapshot = Math.floor((Date.now() - state.dashboardSnapshotAt) / 1000);
   return Math.max(0, remainingSeconds - elapsedSinceSnapshot);
+}
+
+function stockPositionByKey(student, stockKey) {
+  return student.holdings?.find((holding) => holding.stockKey === stockKey)?.positionQty ?? 0;
+}
+
+function renderLiquidation() {
+  const selectedStock = getSelectedStock();
+  if (!state.dashboard?.liquidation?.revealed) {
+    dom.liquidation.textContent = '비공개';
+    return;
+  }
+
+  const stockLiquidation = state.dashboard.liquidation.stocks?.find((entry) => entry.stock?.id === selectedStock?.id);
+  dom.liquidation.textContent = stockLiquidation ? formatPrice(stockLiquidation.valueCents) : '비공개';
 }
 
 function renderDashboard() {
@@ -123,19 +167,22 @@ function renderDashboard() {
     return;
   }
 
+  renderStockOptions();
+
+  const selectedStock = getSelectedStock();
+  const selectedSnapshot = getSelectedSnapshot();
+
+  dom.selectedStock.textContent = formatStockLabel(selectedStock);
   dom.sessionName.textContent = session.sessionName;
   dom.joinCode.textContent = session.joinCode;
   dom.sessionState.textContent = formatSessionStatus(session.status);
   dom.studentCount.textContent = String(dashboard.students.length);
   dom.connectedCount.textContent = String(dashboard.students.filter((student) => student.connected).length);
-  dom.lastTrade.textContent = dashboard.market?.lastTradePriceCents ? formatPrice(dashboard.market.lastTradePriceCents) : '-';
+  dom.lastTrade.textContent = selectedSnapshot?.market?.lastTradePriceCents
+    ? formatPrice(selectedSnapshot.market.lastTradePriceCents)
+    : '-';
   dom.timeRemaining.textContent = formatDuration(getLiveRemainingSeconds());
-  dom.liquidation.textContent = dashboard.liquidation?.revealed
-    ? formatPrice(dashboard.liquidation.valueCents)
-    : '비공개';
-  dom.cardTotal.textContent = dashboard.liquidationComposition
-    ? `현재 활성 카드 합계는 ${formatSignedMoney(dashboard.liquidationComposition.currentValueCents)}이며 카드 수는 ${dashboard.liquidationComposition.cardCount}장입니다.`
-    : '카드 구성을 불러올 수 없습니다.';
+  renderLiquidation();
 
   dom.openButton.disabled = session.status === 'OPEN';
   dom.pauseButton.disabled = session.status === 'PAUSED';
@@ -149,7 +196,9 @@ function renderDashboard() {
         <tr>
           <td>${student.displayName}</td>
           <td>${student.connected ? '예' : '아니오'}</td>
-          <td>${student.positionQty}</td>
+          <td>${stockPositionByKey(student, 'A')}</td>
+          <td>${stockPositionByKey(student, 'B')}</td>
+          <td>${stockPositionByKey(student, 'C')}</td>
           <td>${formatMoney(student.cashCents)}</td>
           <td>${student.openOrderCount}</td>
         </tr>
@@ -163,27 +212,13 @@ function renderDashboard() {
     dashboard.publicInfoSchedule.map(
       (item) => `
         <li>
-          <strong>${formatPublicInfoType(item.infoType)} ${item.sequenceNo}차</strong>
+          <strong>${formatStockLabel(item)} | ${formatPublicInfoType(item.infoType)} ${item.sequenceNo}차</strong>
           <div>상태: ${formatScheduleStatus(item.status)}</div>
           <div class="muted">시작 후 ${formatDuration(item.scheduledOffsetSeconds)}</div>
         </li>
       `
     ),
     '자동 공개 정보가 없습니다.'
-  );
-
-  renderTableRows(
-    dom.cards,
-    (dashboard.liquidationComposition?.cards || []).map(
-      (card) => `
-        <tr>
-          <td>${card.label}</td>
-          <td>${formatCardColor(card.color)}</td>
-          <td>${formatSignedMoney(card.contributionCents)}</td>
-        </tr>
-      `
-    ),
-    '활성 카드가 없습니다.'
   );
 
   renderTableRows(
@@ -203,11 +238,11 @@ function renderDashboard() {
     '아직 순위표가 없습니다.'
   );
 
-  renderOrderBookRows(dom.orderBook, dashboard.orderBook.bids, dashboard.orderBook.asks);
+  renderOrderBookRows(dom.orderBook, selectedSnapshot?.bids || [], selectedSnapshot?.asks || []);
 
   renderTableRows(
     dom.trades,
-    dashboard.orderBook.recentTrades.map(
+    (selectedSnapshot?.recentTrades || []).map(
       (trade) => `
         <tr>
           <td>${trade.qty}</td>
@@ -221,11 +256,11 @@ function renderDashboard() {
 
   renderListItems(
     dom.announcements,
-    dashboard.orderBook.announcements.map(
+    (dashboard.orderBook?.announcements || []).map(
       (announcement) => `
         <li>
           <strong>${formatTime(announcement.createdAt)}</strong>
-          <div>${announcement.message}</div>
+          <div>${announcement.stockDisplayName ? `${announcement.stockDisplayName} | ` : ''}${announcement.message}</div>
         </li>
       `
     ),
@@ -283,6 +318,7 @@ function clearInstructorState() {
   state.auth = null;
   state.me = null;
   state.dashboard = null;
+  state.selectedStockId = null;
   state.dashboardSnapshotAt = 0;
   clearStorage(STORAGE_KEYS.instructor);
   renderDashboard();
@@ -385,6 +421,12 @@ dom.logout.addEventListener('click', () => {
   clearInstructorState();
 });
 
+dom.stockSelect.addEventListener('change', () => {
+  state.selectedStockId = Number.parseInt(dom.stockSelect.value, 10) || null;
+  syncSelectedStock(state.selectedStockId);
+  renderDashboard();
+});
+
 async function patchState(status) {
   const sessionId = state.me?.principal?.sessionId || state.auth?.sessionId || state.dashboard?.session?.id;
   await apiFetch(`/api/sessions/${sessionId}/state`, {
@@ -425,7 +467,7 @@ dom.closeButton.addEventListener('click', async () => {
 dom.finalizeButton.addEventListener('click', async () => {
   try {
     clearError();
-    const sessionId = state.me?.principal?.sessionId || state.dashboard?.session?.id;
+    const sessionId = state.me?.principal?.sessionId || state.auth?.sessionId || state.dashboard?.session?.id;
     await apiFetch(`/api/sessions/${sessionId}/finalize`, {
       method: 'POST',
       token: state.auth.token

@@ -97,6 +97,7 @@ function createApp({ config, gameService, logger = console } = {}) {
       publish(result.events);
       response.status(201).json({
         session: result.session,
+        stocks: result.stocks,
         instructor: result.instructor
       });
     })
@@ -114,6 +115,7 @@ function createApp({ config, gameService, logger = console } = {}) {
       publish(result.events);
       response.status(201).json({
         session: result.session,
+        stocks: result.stocks,
         instructor: result.instructor
       });
     })
@@ -143,6 +145,7 @@ function createApp({ config, gameService, logger = console } = {}) {
       response.status(200).json({
         principal: request.principal,
         participant: participantSummary.participant,
+        stocks: participantSummary.stocks,
         features: {
           peeks: peekAvailability
         }
@@ -218,6 +221,7 @@ function createApp({ config, gameService, logger = console } = {}) {
       const result = await gameService.submitOrder({
         sessionId: request.principal.sessionId,
         participantId: request.principal.participantId,
+        sessionStockId: request.body?.sessionStockId,
         idempotencyKey,
         side: request.body?.side,
         orderType: request.body?.orderType,
@@ -266,7 +270,8 @@ function createApp({ config, gameService, logger = console } = {}) {
 
       const result = await gameService.purchasePeek({
         sessionId: request.principal.sessionId,
-        participantId: request.principal.participantId
+        participantId: request.principal.participantId,
+        sessionStockId: request.body?.sessionStockId
       });
 
       publish(result.events);

@@ -20,6 +20,8 @@ async function createHarness({ persistent = false, dataDir } = {}) {
   const engine = new MatchingEngine({ db });
   await engine.initialize();
   const session = await engine.createSession();
+  const sessionStocks = await engine.listSessionStocks(session.id);
+  const primaryStock = sessionStocks[0];
 
   async function createTrader(label) {
     return engine.createParticipant({
@@ -34,6 +36,8 @@ async function createHarness({ persistent = false, dataDir } = {}) {
     db,
     engine,
     session,
+    sessionStocks,
+    primaryStock,
     createTrader,
     async close() {
       await engine.close();
@@ -42,7 +46,20 @@ async function createHarness({ persistent = false, dataDir } = {}) {
 }
 
 async function submit(engine, order) {
-  return engine.submitOrder(order);
+  if (order.sessionStockId) {
+    return engine.submitOrder(order);
+  }
+
+  const [primaryStock] = await engine.listSessionStocks(order.sessionId);
+  return engine.submitOrder({
+    ...order,
+    sessionStockId: primaryStock.id
+  });
+}
+
+async function getPrimaryHolding(harness, participantId) {
+  const holdings = await harness.engine.getHoldings(participantId);
+  return holdings.find((holding) => holding.session_stock_id === harness.primaryStock.id) || null;
 }
 
 test('market order execution uses the resting order price', async () => {
@@ -79,13 +96,15 @@ test('market order execution uses the resting order price', async () => {
 
     const buyerAccount = await harness.engine.getAccount(buyer.participant.id);
     const sellerAccount = await harness.engine.getAccount(seller.participant.id);
+    const buyerHolding = await getPrimaryHolding(harness, buyer.participant.id);
+    const sellerHolding = await getPrimaryHolding(harness, seller.participant.id);
     const openOrders = await harness.engine.listOpenOrders(harness.session.id);
 
     assert.equal(buyerAccount.cash_cents, 17600);
-    assert.equal(buyerAccount.position_qty, 7);
+    assert.equal(buyerHolding.position_qty, 7);
     assert.equal(sellerAccount.cash_cents, 22400);
-    assert.equal(sellerAccount.position_qty, 3);
-    assert.equal(sellerAccount.reserved_sell_qty, 1);
+    assert.equal(sellerHolding.position_qty, 3);
+    assert.equal(sellerHolding.reserved_sell_qty, 1);
     assert.equal(openOrders.length, 1);
     assert.equal(openOrders[0].remaining_qty, 1);
   } finally {
@@ -110,12 +129,13 @@ test('non-crossing limit orders rest on the book and reserve capacity', async ()
     });
 
     const buyerAccount = await harness.engine.getAccount(buyer.participant.id);
+    const buyerHolding = await getPrimaryHolding(harness, buyer.participant.id);
     const openOrders = await harness.engine.listOpenOrders(harness.session.id);
 
     assert.equal(response.order.status, 'OPEN');
     assert.equal(response.fills.length, 0);
     assert.equal(buyerAccount.cash_cents, STARTING_CASH_CENTS);
-    assert.equal(buyerAccount.position_qty, STARTING_POSITION_QTY);
+    assert.equal(buyerHolding.position_qty, STARTING_POSITION_QTY);
     assert.equal(buyerAccount.reserved_buy_cents, 3600);
     assert.equal(openOrders.length, 1);
     assert.equal(openOrders[0].side, 'BUY');
@@ -156,8 +176,9 @@ test('crossing limit orders execute immediately at the resting order price', asy
     assert.equal(response.fills[0].priceCents, 1200);
 
     const buyerAccount = await harness.engine.getAccount(buyer.participant.id);
+    const buyerHolding = await getPrimaryHolding(harness, buyer.participant.id);
     assert.equal(buyerAccount.cash_cents, 17600);
-    assert.equal(buyerAccount.position_qty, 7);
+    assert.equal(buyerHolding.position_qty, 7);
     assert.equal(buyerAccount.reserved_buy_cents, 0);
     assert.equal((await harness.engine.listOpenOrders(harness.session.id)).length, 0);
   } finally {
@@ -205,6 +226,7 @@ test('partial fills consume the best prices first and leave the remaining order 
     const fills = await harness.engine.listFills(harness.session.id);
     const sellerBOrder = (await harness.engine.listOrders(harness.session.id)).find((order) => order.id === response.fills[1].restingOrderId);
     const buyerAccount = await harness.engine.getAccount(buyer.participant.id);
+    const buyerHolding = await getPrimaryHolding(harness, buyer.participant.id);
 
     assert.equal(response.order.status, 'FILLED');
     assert.equal(response.fills.length, 2);
@@ -217,7 +239,7 @@ test('partial fills consume the best prices first and leave the remaining order 
     );
     assert.equal(fills.length, 2);
     assert.equal(buyerAccount.cash_cents, 15800);
-    assert.equal(buyerAccount.position_qty, 9);
+    assert.equal(buyerHolding.position_qty, 9);
     assert.equal(sellerBOrder.status, 'PARTIALLY_FILLED');
     assert.equal(sellerBOrder.remaining_qty, 1);
   } finally {
@@ -307,12 +329,13 @@ test('concurrent order submissions do not overfill the book', async () => {
     const cancelledCount = results.filter((result) => result.order.status === 'CANCELLED').length;
     const fills = await harness.engine.listFills(harness.session.id);
     const sellerAccount = await harness.engine.getAccount(seller.participant.id);
+    const sellerHolding = await getPrimaryHolding(harness, seller.participant.id);
 
     assert.equal(fillCount, 10);
     assert.equal(cancelledCount, 30);
     assert.equal(fills.length, 10);
     assert.equal(fills.reduce((sum, fill) => sum + fill.qty, 0), 10);
-    assert.equal(sellerAccount.position_qty, -5);
+    assert.equal(sellerHolding.position_qty, -5);
     assert.equal(sellerAccount.cash_cents, 30000);
     assert.equal((await harness.engine.listOpenOrders(harness.session.id)).length, 0);
   } finally {
@@ -337,11 +360,12 @@ test('short constraint enforcement rejects orders that would exceed -5 shares', 
     });
 
     const sellerAccount = await harness.engine.getAccount(seller.participant.id);
+    const sellerHolding = await getPrimaryHolding(harness, seller.participant.id);
 
     assert.equal(response.order.status, 'REJECTED');
     assert.equal(response.order.rejectionReason, 'INSUFFICIENT_SHORT_CAPACITY');
-    assert.equal(sellerAccount.position_qty, STARTING_POSITION_QTY);
-    assert.equal(sellerAccount.reserved_sell_qty, 0);
+    assert.equal(sellerHolding.position_qty, STARTING_POSITION_QTY);
+    assert.equal(sellerHolding.reserved_sell_qty, 0);
   } finally {
     await harness.close();
   }
@@ -396,9 +420,11 @@ test('restart recovery continues matching from persisted database state', async 
     const db = await createPGliteDatabase({ dataDir: firstHarness.dataDir });
     const restartedEngine = new MatchingEngine({ db });
     await restartedEngine.initialize();
+    const [restartedPrimaryStock] = await restartedEngine.listSessionStocks(firstHarness.session.id);
 
     const response = await restartedEngine.submitOrder({
       sessionId: firstHarness.session.id,
+      sessionStockId: restartedPrimaryStock.id,
       participantId: buyer.participant.id,
       idempotencyKey: 'after-restart',
       side: 'BUY',

@@ -60,6 +60,10 @@
       <section id="instructor-dashboard" hidden>
         <div class="grid cards-grid">
           <article class="panel stat-card">
+            <span class="label">선택 종목</span>
+            <strong id="dashboard-selected-stock">-</strong>
+          </article>
+          <article class="panel stat-card">
             <span class="label">세션</span>
             <strong id="dashboard-session-name">-</strong>
           </article>
@@ -93,6 +97,13 @@
           </article>
         </div>
 
+        <section class="panel">
+          <label>
+            조회 종목
+            <select id="dashboard-stock-select"></select>
+          </label>
+        </section>
+
         <div class="panel">
           <div class="button-row">
             <button id="session-open" class="button primary" type="button">시작</button>
@@ -111,7 +122,9 @@
                   <tr>
                     <th>이름</th>
                     <th>접속</th>
-                    <th>주식 수</th>
+                    <th>A</th>
+                    <th>B</th>
+                    <th>C</th>
                     <th>현금</th>
                     <th>미체결 주문</th>
                   </tr>
@@ -125,23 +138,6 @@
         <section class="panel">
           <h2>자동 공개 정보</h2>
           <ul id="public-info-schedule" class="announcement-list"></ul>
-        </section>
-
-        <section class="panel">
-          <h2>강사용 카드 구성</h2>
-          <p id="dashboard-card-total" class="muted">현재 청산가 구성은 비공개입니다.</p>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>카드</th>
-                  <th>색상</th>
-                  <th>기여값</th>
-                </tr>
-              </thead>
-              <tbody id="dashboard-cards"></tbody>
-            </table>
-          </div>
         </section>
 
         <div class="grid two-column-grid">

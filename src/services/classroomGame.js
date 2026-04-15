@@ -6,6 +6,11 @@ const DEFAULT_PEEK_PRICE_CENTS = 100;
 const DEFAULT_BORROW_INTEREST_BPS = 1000;
 const SAR_BONUS_CENTS = 2000;
 const DEFAULT_EPS_ANNOUNCEMENT_COUNT = 4;
+const DEFAULT_TRADABLE_STOCKS = [
+  { stockKey: 'A', displayName: '종목 A', sortOrder: 1, initialPositionQty: 5 },
+  { stockKey: 'B', displayName: '종목 B', sortOrder: 2, initialPositionQty: 0 },
+  { stockKey: 'C', displayName: '종목 C', sortOrder: 3, initialPositionQty: 0 }
+];
 
 const SUITS = [
   { code: 'S', color: 'BLACK' },
@@ -92,6 +97,15 @@ function buildPublicInfoSchedule(
 
 const PUBLIC_INFO_SCHEDULE = buildPublicInfoSchedule();
 
+function buildTradableStocks(referencePriceCents = DEFAULT_REFERENCE_PRICE_CENTS) {
+  const resolvedReferencePriceCents = normalizePositiveInteger(referencePriceCents, DEFAULT_REFERENCE_PRICE_CENTS);
+
+  return DEFAULT_TRADABLE_STOCKS.map((stock) => ({
+    ...stock,
+    referencePriceCents: resolvedReferencePriceCents
+  }));
+}
+
 function createShuffledDeck() {
   const cards = [];
 
@@ -147,12 +161,14 @@ function centsToSignedDollars(cents) {
   return `${prefix}$${absolute.toFixed(2)}`;
 }
 
-function formatSarMessage(sequenceNo, reportTotalCents) {
-  return `SAR ${sequenceNo}차: 다섯 장 합계에 $20를 더한 값은 ${centsToSignedDollars(reportTotalCents)}입니다.`;
+function formatSarMessage(sequenceNo, reportTotalCents, stockDisplayName) {
+  const prefix = stockDisplayName ? `${stockDisplayName} ` : '';
+  return `${prefix}SAR ${sequenceNo}차: 다섯 장 합계에 $20를 더한 값은 ${centsToSignedDollars(reportTotalCents)}입니다.`;
 }
 
-function formatEpsMessage(sequenceNo, deltaCents) {
-  return `EPS ${sequenceNo}차: 카드 1장이 빠지고 1장이 추가되었습니다. 순변화는 ${centsToSignedDollars(deltaCents)}입니다.`;
+function formatEpsMessage(sequenceNo, deltaCents, stockDisplayName) {
+  const prefix = stockDisplayName ? `${stockDisplayName} ` : '';
+  return `${prefix}EPS ${sequenceNo}차: 카드 1장이 빠지고 1장이 추가되었습니다. 순변화는 ${centsToSignedDollars(deltaCents)}입니다.`;
 }
 
 function computeElapsedSeconds(session, now = new Date()) {
@@ -208,8 +224,10 @@ module.exports = {
   DEFAULT_GAME_DURATION_SECONDS,
   DEFAULT_PEEK_PRICE_CENTS,
   DEFAULT_REFERENCE_PRICE_CENTS,
+  DEFAULT_TRADABLE_STOCKS,
   PUBLIC_INFO_SCHEDULE,
   SAR_BONUS_CENTS,
+  buildTradableStocks,
   buildPublicInfoSchedule,
   computeBorrowFeeCents,
   computeElapsedSeconds,

@@ -9,7 +9,7 @@ This repository contains a minimal classroom trading game that is now deployable
 
 The MVP is intentionally narrow:
 
-- one stock only
+- three tradable stocks per session
 - one active classroom session at a time
 - one Render web instance
 - PostgreSQL is the source of truth
@@ -142,6 +142,7 @@ This means the app does not depend on any correctness-critical state living only
 Persisted in PostgreSQL:
 
 - market sessions and session status
+- tradable session stock definitions
 - join codes and participant tokens
 - accounts, balances, and positions
 - orders and cancellations
@@ -167,6 +168,7 @@ Safe across restarts:
 
 - order book state is rebuilt from persisted orders
 - accounts and fills remain intact
+- per-stock holdings, decks, and public-info schedules remain intact
 - SAR/EPS releases continue from persisted elapsed game time
 - hidden active-card state survives restarts, so final liquidation remains correct
 - browser clients can reconnect and resync from REST snapshots

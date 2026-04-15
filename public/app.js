@@ -67,6 +67,7 @@ const API_ERROR_LABELS = {
   INVALID_ROLE: '역할 정보가 올바르지 않습니다.',
   INVALID_SESSION_ID: '세션 정보가 올바르지 않습니다.',
   INVALID_SESSION_STATUS: '세션 상태 값이 올바르지 않습니다.',
+  INVALID_STOCK_ID: '종목 정보가 올바르지 않습니다.',
   INVALID_SIDE: '매수/매도 구분이 올바르지 않습니다.',
   INVALID_TOKEN: '로그인 토큰이 올바르지 않습니다.',
   JOIN_CODE_ALREADY_EXISTS: '참가 코드가 충돌했습니다. 다시 시도하세요.',
@@ -141,6 +142,14 @@ export function formatPublicInfoType(infoType) {
 
 export function formatCardColor(color) {
   return CARD_COLOR_LABELS[color] || color || '-';
+}
+
+export function formatStockLabel(stock) {
+  if (!stock) {
+    return '-';
+  }
+
+  return stock.displayName || stock.stockDisplayName || stock.stockKey || '-';
 }
 
 export function formatErrorMessage(error) {

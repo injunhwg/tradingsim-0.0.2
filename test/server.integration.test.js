@@ -61,6 +61,20 @@ function authHeaders(token, extra = {}) {
   };
 }
 
+function getStockByKey(stocks, stockKey = 'A') {
+  return (stocks || []).find((stock) => stock.stockKey === stockKey) || null;
+}
+
+function getStockSnapshot(snapshot, stockKey = 'A') {
+  const stock = getStockByKey(snapshot.stocks, stockKey);
+  return (snapshot.stockSnapshots || []).find((entry) => entry.stock.id === stock?.id) || null;
+}
+
+function getHolding(accountState, stockKey = 'A') {
+  const stock = getStockByKey(accountState.stocks, stockKey);
+  return (accountState.account.holdings || []).find((holding) => holding.sessionStockId === stock?.id) || null;
+}
+
 function createEventCollector(socket) {
   const queue = [];
   const waiters = [];
@@ -138,10 +152,12 @@ test('REST API supports a full classroom trading flow', async () => {
     assert.equal(createResult.response.status, 201);
     assert.equal(createResult.body.session.status, 'PAUSED');
     assert.equal(createResult.body.session.totalDurationSeconds, 900);
+    assert.equal(createResult.body.stocks.length, 3);
 
     const instructorToken = createResult.body.instructor.participant.authToken;
     const joinCode = createResult.body.session.joinCode;
     const sessionId = createResult.body.session.id;
+    const primaryStockId = getStockByKey(createResult.body.stocks, 'A').id;
 
     const sellerJoin = await requestJson(`${harness.baseUrl}/api/sessions/join`, {
       method: 'POST',
@@ -188,6 +204,7 @@ test('REST API supports a full classroom trading flow', async () => {
       method: 'POST',
       headers: authHeaders(sellerToken, { 'idempotency-key': 'sell-1' }),
       body: JSON.stringify({
+        sessionStockId: primaryStockId,
         side: 'SELL',
         orderType: 'LIMIT',
         quantity: 2,
@@ -202,6 +219,7 @@ test('REST API supports a full classroom trading flow', async () => {
       method: 'POST',
       headers: authHeaders(buyerToken, { 'idempotency-key': 'buy-1' }),
       body: JSON.stringify({
+        sessionStockId: primaryStockId,
         side: 'BUY',
         orderType: 'MARKET',
         quantity: 1
@@ -219,7 +237,8 @@ test('REST API supports a full classroom trading flow', async () => {
     });
 
     assert.equal(accountResult.response.status, 200);
-    assert.equal(accountResult.body.account.positionQty, 6);
+    assert.equal(getHolding(accountResult.body, 'A').positionQty, 6);
+    assert.equal(getHolding(accountResult.body, 'B').positionQty, 0);
     assert.equal(accountResult.body.account.cashCents, 19000);
 
     const bookResult = await requestJson(`${harness.baseUrl}/api/order-book`, {
@@ -229,9 +248,9 @@ test('REST API supports a full classroom trading flow', async () => {
     });
 
     assert.equal(bookResult.response.status, 200);
-    assert.equal(bookResult.body.asks.length, 1);
-    assert.equal(bookResult.body.asks[0].totalQty, 1);
-    assert.equal(bookResult.body.market.lastTradePriceCents, 1000);
+    assert.equal(getStockSnapshot(bookResult.body, 'A').asks.length, 1);
+    assert.equal(getStockSnapshot(bookResult.body, 'A').asks[0].totalQty, 1);
+    assert.equal(getStockSnapshot(bookResult.body, 'A').market.lastTradePriceCents, 1000);
 
     const leaderboardResult = await requestJson(`${harness.baseUrl}/api/leaderboard`, {
       headers: {
@@ -309,7 +328,7 @@ test('instructor reset preserves the automatic public info schedule and removes 
     });
 
     assert.equal(dashboard.response.status, 200);
-    assert.equal(dashboard.body.publicInfoSchedule.length, 6);
+    assert.equal(dashboard.body.publicInfoSchedule.length, 18);
     assert.ok(dashboard.body.publicInfoSchedule.every((item) => ['SAR', 'EPS'].includes(item.infoType)));
 
     const manualAnnouncementAttempt = await requestJson(`${harness.baseUrl}/api/sessions/${sessionId}/announcements`, {
@@ -350,8 +369,9 @@ test('automatic public info schedule scales with the configured game duration', 
     });
 
     assert.equal(dashboard.response.status, 200);
+    const stockASchedule = dashboard.body.publicInfoSchedule.filter((item) => item.stockKey === 'A');
     assert.deepEqual(
-      dashboard.body.publicInfoSchedule.map((item) => [item.infoType, item.sequenceNo, item.scheduledOffsetSeconds]),
+      stockASchedule.map((item) => [item.infoType, item.sequenceNo, item.scheduledOffsetSeconds]),
       [
         ['SAR', 1, 0],
         ['EPS', 1, 120],
@@ -385,6 +405,7 @@ test('order book snapshot keeps the inside market plus the next five price level
     const instructorToken = createResult.body.instructor.participant.authToken;
     const joinCode = createResult.body.session.joinCode;
     const sessionId = createResult.body.session.id;
+    const primaryStockId = getStockByKey(createResult.body.stocks, 'A').id;
 
     await requestJson(`${harness.baseUrl}/api/sessions/${sessionId}/state`, {
       method: 'PATCH',
@@ -403,6 +424,7 @@ test('order book snapshot keeps the inside market plus the next five price level
         method: 'POST',
         headers: authHeaders(token, { 'idempotency-key': `bid-${index + 1}` }),
         body: JSON.stringify({
+          sessionStockId: primaryStockId,
           side: 'BUY',
           orderType: 'LIMIT',
           quantity: 1,
@@ -419,6 +441,7 @@ test('order book snapshot keeps the inside market plus the next five price level
         method: 'POST',
         headers: authHeaders(token, { 'idempotency-key': `ask-${index + 1}` }),
         body: JSON.stringify({
+          sessionStockId: primaryStockId,
           side: 'SELL',
           orderType: 'LIMIT',
           quantity: 1,
@@ -434,12 +457,12 @@ test('order book snapshot keeps the inside market plus the next five price level
     });
 
     assert.equal(snapshot.response.status, 200);
-    assert.deepEqual(snapshot.body.bids.map((level) => level.priceCents), [990, 980, 970, 960, 950, 940]);
-    assert.deepEqual(snapshot.body.asks.map((level) => level.priceCents), [1010, 1020, 1030, 1040, 1050, 1060]);
-    assert.equal(snapshot.body.bids[0].totalQty, 1);
-    assert.equal(snapshot.body.bids[0].orderCount, 1);
-    assert.equal(snapshot.body.asks[0].totalQty, 1);
-    assert.equal(snapshot.body.asks[0].orderCount, 1);
+    assert.deepEqual(getStockSnapshot(snapshot.body, 'A').bids.map((level) => level.priceCents), [990, 980, 970, 960, 950, 940]);
+    assert.deepEqual(getStockSnapshot(snapshot.body, 'A').asks.map((level) => level.priceCents), [1010, 1020, 1030, 1040, 1050, 1060]);
+    assert.equal(getStockSnapshot(snapshot.body, 'A').bids[0].totalQty, 1);
+    assert.equal(getStockSnapshot(snapshot.body, 'A').bids[0].orderCount, 1);
+    assert.equal(getStockSnapshot(snapshot.body, 'A').asks[0].totalQty, 1);
+    assert.equal(getStockSnapshot(snapshot.body, 'A').asks[0].orderCount, 1);
   } finally {
     await harness.close();
   }
@@ -464,6 +487,7 @@ test('WebSocket broadcasts live game updates from committed database state', asy
     const instructorToken = createResult.body.instructor.participant.authToken;
     const joinCode = createResult.body.session.joinCode;
     const sessionId = createResult.body.session.id;
+    const primaryStockId = getStockByKey(createResult.body.stocks, 'A').id;
 
     const sellerJoin = await requestJson(`${harness.baseUrl}/api/sessions/join`, {
       method: 'POST',
@@ -504,6 +528,7 @@ test('WebSocket broadcasts live game updates from committed database state', asy
       method: 'POST',
       headers: authHeaders(sellerToken, { 'idempotency-key': 'seller-live-1' }),
       body: JSON.stringify({
+        sessionStockId: primaryStockId,
         side: 'SELL',
         orderType: 'LIMIT',
         quantity: 1,
@@ -515,6 +540,7 @@ test('WebSocket broadcasts live game updates from committed database state', asy
       method: 'POST',
       headers: authHeaders(buyerToken, { 'idempotency-key': 'buyer-live-1' }),
       body: JSON.stringify({
+        sessionStockId: primaryStockId,
         side: 'BUY',
         orderType: 'MARKET',
         quantity: 1
@@ -524,7 +550,9 @@ test('WebSocket broadcasts live game updates from committed database state', asy
     const tradeEvent = await events.waitFor((event) => event.type === 'trade.executed');
     const fillEvent = await events.waitFor((event) => event.type === 'player.fill');
     const accountEvent = await events.waitFor(
-      (event) => event.type === 'account.updated' && event.payload.account.positionQty === 6
+      (event) =>
+        event.type === 'account.updated' &&
+        event.payload.account.holdings?.some((holding) => holding.stockKey === 'A' && holding.positionQty === 6)
     );
 
     assert.equal(tradeEvent.payload.fill.priceCents, 1000);
@@ -574,6 +602,7 @@ test('automatic public information and private peeks follow the classroom game r
     const instructorToken = createResult.body.instructor.participant.authToken;
     const joinCode = createResult.body.session.joinCode;
     const sessionId = createResult.body.session.id;
+    const primaryStockId = getStockByKey(createResult.body.stocks, 'A').id;
 
     const studentJoin = await requestJson(`${harness.baseUrl}/api/sessions/join`, {
       method: 'POST',
@@ -603,10 +632,14 @@ test('automatic public information and private peeks follow the classroom game r
       method: 'POST',
       headers: {
         authorization: `Bearer ${studentToken}`
-      }
+      },
+      body: JSON.stringify({
+        sessionStockId: primaryStockId
+      })
     });
 
     assert.equal(peekResult.response.status, 201);
+    assert.equal(peekResult.body.peek.stockKey, 'A');
     assert.equal(peekResult.body.peek.priceCents, 100);
     assert.equal(Array.isArray(peekResult.body.peek.contributions), true);
     assert.equal(peekResult.body.peek.contributions.length, 3);
@@ -652,10 +685,10 @@ test('automatic public information and private peeks follow the classroom game r
       [sessionId]
     );
     const duplicateLabels = await harness.runtime.db.query(
-      `SELECT label, COUNT(*) AS count
+      `SELECT session_stock_id, label, COUNT(*) AS count
        FROM session_cards
        WHERE session_id = $1
-       GROUP BY label
+       GROUP BY session_stock_id, label
        HAVING COUNT(*) > 2`,
       [sessionId]
     );
@@ -666,18 +699,13 @@ test('automatic public information and private peeks follow the classroom game r
          AND state = 'ACTIVE'`,
       [sessionId]
     );
-    const dashboardCardTotal = dashboard.body.liquidationComposition.cards.reduce(
-      (sum, card) => sum + card.contributionCents,
-      0
-    );
 
-    assert.equal(autoAnnouncements.length, 6);
-    assert.equal(dashboard.body.publicInfoSchedule.filter((item) => item.status === 'RELEASED').length, 6);
-    assert.equal(Number(deckSize.rows[0].count), 104);
+    assert.equal(autoAnnouncements.length, 18);
+    assert.equal(dashboard.body.publicInfoSchedule.filter((item) => item.status === 'RELEASED').length, 18);
+    assert.equal(Number(deckSize.rows[0].count), 312);
     assert.equal(duplicateLabels.rows.length, 0);
-    assert.equal(Number(activeCards.rows[0].count), 10);
-    assert.equal(dashboard.body.liquidationComposition.cardCount, 10);
-    assert.equal(dashboard.body.liquidationComposition.currentValueCents, dashboardCardTotal);
+    assert.equal(Number(activeCards.rows[0].count), 30);
+    assert.equal(dashboard.body.orderBook.stockSnapshots.length, 3);
   } finally {
     await harness.close();
   }
@@ -702,6 +730,7 @@ test('student account state only returns the latest three private peeks', async 
     const instructorToken = createResult.body.instructor.participant.authToken;
     const joinCode = createResult.body.session.joinCode;
     const sessionId = createResult.body.session.id;
+    const primaryStockId = getStockByKey(createResult.body.stocks, 'A').id;
 
     const studentJoin = await requestJson(`${harness.baseUrl}/api/sessions/join`, {
       method: 'POST',
@@ -725,7 +754,10 @@ test('student account state only returns the latest three private peeks', async 
         method: 'POST',
         headers: {
           authorization: `Bearer ${studentToken}`
-        }
+        },
+        body: JSON.stringify({
+          sessionStockId: primaryStockId
+        })
       });
       purchasedPeekIds.push(peekResult.body.peek.id);
     }
@@ -766,6 +798,7 @@ test('final liquidation uses the hidden card value and applies borrowing interes
     const instructorToken = createResult.body.instructor.participant.authToken;
     const joinCode = createResult.body.session.joinCode;
     const sessionId = createResult.body.session.id;
+    const primaryStockId = getStockByKey(createResult.body.stocks, 'A').id;
 
     const sellerJoin = await requestJson(`${harness.baseUrl}/api/sessions/join`, {
       method: 'POST',
@@ -797,6 +830,7 @@ test('final liquidation uses the hidden card value and applies borrowing interes
       method: 'POST',
       headers: authHeaders(sellerToken, { 'idempotency-key': 'seller-final-1' }),
       body: JSON.stringify({
+        sessionStockId: primaryStockId,
         side: 'SELL',
         orderType: 'LIMIT',
         quantity: 6,
@@ -808,6 +842,7 @@ test('final liquidation uses the hidden card value and applies borrowing interes
       method: 'POST',
       headers: authHeaders(buyerToken, { 'idempotency-key': 'buyer-final-1' }),
       body: JSON.stringify({
+        sessionStockId: primaryStockId,
         side: 'BUY',
         orderType: 'MARKET',
         quantity: 6
@@ -818,8 +853,9 @@ test('final liquidation uses the hidden card value and applies borrowing interes
       `SELECT COALESCE(SUM(contribution_cents), 0) AS liquidation_value_cents
        FROM session_cards
        WHERE session_id = $1
+         AND session_stock_id = $2
          AND state = 'ACTIVE'`,
-      [sessionId]
+      [sessionId, primaryStockId]
     );
     const liquidationValueCents = Number(liquidationValueResult.rows[0].liquidation_value_cents);
 
@@ -830,7 +866,10 @@ test('final liquidation uses the hidden card value and applies borrowing interes
 
     assert.equal(finalizeResult.response.status, 200);
     assert.equal(finalizeResult.body.leaderboard.liquidation.revealed, true);
-    assert.equal(finalizeResult.body.leaderboard.liquidation.valueCents, liquidationValueCents);
+    assert.equal(
+      finalizeResult.body.leaderboard.liquidation.stocks.find((entry) => entry.stock.stockKey === 'A').valueCents,
+      liquidationValueCents
+    );
 
     const borrower = finalizeResult.body.leaderboard.leaderboard.find((row) => row.displayName === 'Borrower');
 
@@ -846,7 +885,7 @@ test('final liquidation uses the hidden card value and applies borrowing interes
     });
 
     assert.equal(postFinalizeBook.body.liquidation.revealed, true);
-    assert.equal(postFinalizeBook.body.market.markPriceCents, liquidationValueCents);
+    assert.equal(getStockSnapshot(postFinalizeBook.body, 'A').market.markPriceCents, liquidationValueCents);
   } finally {
     await harness.close();
   }

@@ -40,11 +40,15 @@
       <section id="student-dashboard" hidden>
         <div class="grid cards-grid">
           <article class="panel stat-card">
+            <span class="label">선택 종목</span>
+            <strong id="student-selected-stock">-</strong>
+          </article>
+          <article class="panel stat-card">
             <span class="label">현금</span>
             <strong id="student-cash">$0.00</strong>
           </article>
           <article class="panel stat-card">
-            <span class="label">주식 수</span>
+            <span class="label">보유 수량</span>
             <strong id="student-shares">0</strong>
           </article>
           <article class="panel stat-card">
@@ -69,11 +73,22 @@
           </article>
         </div>
 
+        <section class="panel">
+          <label>
+            조회 종목
+            <select id="student-stock-select"></select>
+          </label>
+        </section>
+
         <div class="grid two-column-grid">
           <section class="panel">
             <h2>주문 제출</h2>
             <form id="student-order-form" class="stack">
               <div class="form-row">
+                <label>
+                  종목
+                  <select id="order-stock" name="sessionStockId"></select>
+                </label>
                 <label>
                   구분
                   <select id="order-side" name="side">
@@ -121,6 +136,7 @@
               <table>
                 <thead>
                   <tr>
+                    <th>종목</th>
                     <th>구분</th>
                     <th>유형</th>
                     <th>수량</th>
@@ -140,6 +156,7 @@
               <table>
                 <thead>
                   <tr>
+                    <th>종목</th>
                     <th>구분</th>
                     <th>수량</th>
                     <th>가격</th>
@@ -201,7 +218,7 @@
         <div class="grid two-column-grid">
           <section class="panel">
             <h2>최종 청산가</h2>
-            <p id="student-liquidation" class="muted">공개 전까지 비공개입니다.</p>
+            <div id="student-liquidation" class="muted">공개 전까지 비공개입니다.</div>
           </section>
 
           <section class="panel">

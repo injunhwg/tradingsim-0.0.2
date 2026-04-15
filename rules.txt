@@ -1,7 +1,7 @@
 # How to Play
 A player’s objective in the Stock Trading Game is to amass the portfolio of stocks and cash with the greatest liquidation value.
 
-All players start with the same portfolio of five shares of a stock valued @ $40/share, plus $200 cash, for a total portfolio of $400. They then buy and sell stocks based on public and private information about the company revealed to them over the course of the game. At the end, a player’s portfolio is valued at the underlying value of a company’s stock times the number of shares they own plus the cash they have.
+All players start with the same portfolio of five shares of Stock A valued @ $40/share, zero shares of Stocks B and C, plus $200 cash, for a total portfolio of $400. They then buy and sell three tradable stocks based on public and private information about each company revealed to them over the course of the game. At the end, a player’s portfolio is valued at the underlying value of each stock times the number of shares they own plus the cash they have.
 
 # Rules
 
@@ -45,13 +45,13 @@ Example: Assume that the stock is composed of the following ten cards.
 
 ## Getting and Using Information
 
-Players gain information about the company through public sources: two Stock Analyst Reports (SARs), and Earnings per Share (EPS) reports released during the course of play. Players may also purchase private “peeks” of three randomly chosen active-card contributions from the company’s underlying stack. Players therefore have access to incomplete information about the company:
+Players gain information about each company through public sources: two Stock Analyst Reports (SARs), and Earnings per Share (EPS) reports released during the course of play. Players may also purchase private “peeks” of three randomly chosen active-card contributions from a selected company’s underlying stack. Players therefore have access to incomplete information about each company:
 
 - Security Analyst Reports (SARs): Each report reveals the sum of five randomly chosen cards from a company’s stack + $20
 - Earnings per Share (EPS): For the company, one card is deleted, one card is added, and the difference is reported
 - Private Information: For $1, players may “peek” at 3 randomly selected active-card contributions. They may buy as many “peeks” as they like; each time the sample is chosen at random from the company’s active card stack.
 
-The default game duration is 15 minutes. While private peeks can be purchased at any time during the game, public information is released on this schedule:
+The default game duration is 15 minutes. While private peeks can be purchased at any time during the game, each of the three stocks follows the same public-information schedule:
 
 Time After Start	Default Time Remaining
 - 1st Security Analyst Report (SAR)	0:00	15:00
