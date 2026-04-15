@@ -19,7 +19,7 @@ CREATE INDEX IF NOT EXISTS session_stocks_session_sort_idx
 CREATE TABLE IF NOT EXISTS account_holdings (
   participant_id INTEGER NOT NULL REFERENCES participants(id) ON DELETE CASCADE,
   session_stock_id INTEGER NOT NULL REFERENCES session_stocks(id) ON DELETE CASCADE,
-  position_qty INTEGER NOT NULL DEFAULT 5,
+  position_qty INTEGER NOT NULL DEFAULT 0,
   reserved_sell_qty INTEGER NOT NULL DEFAULT 0,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (participant_id, session_stock_id),
