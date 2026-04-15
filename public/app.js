@@ -152,6 +152,28 @@ export function formatStockLabel(stock) {
   return stock.displayName || stock.stockDisplayName || stock.stockKey || '-';
 }
 
+export function renderStockSwitchButtons(container, stocks, selectedStockId) {
+  if (!container) {
+    return;
+  }
+
+  container.innerHTML = (stocks || [])
+    .map((stock) => {
+      const isActive = stock.id === selectedStockId;
+      return `
+        <button
+          class="button stock-switcher-button${isActive ? ' active' : ''}"
+          type="button"
+          data-stock-id="${stock.id}"
+          aria-pressed="${isActive ? 'true' : 'false'}"
+        >
+          ${formatStockLabel(stock)}
+        </button>
+      `;
+    })
+    .join('');
+}
+
 export function formatErrorMessage(error) {
   if (error?.code && API_ERROR_LABELS[error.code]) {
     return API_ERROR_LABELS[error.code];

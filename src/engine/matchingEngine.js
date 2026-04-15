@@ -3,8 +3,8 @@ const crypto = require('node:crypto');
 const { initializeSchema } = require('../db/schema');
 const { buildTradableStocks } = require('../services/classroomGame');
 
-const STARTING_CASH_CENTS = 20000;
-const MAX_BORROW_CENTS = 20000;
+const STARTING_CASH_CENTS = 40000;
+const MAX_BORROW_CENTS = 40000;
 const STARTING_POSITION_QTY = 5;
 const MAX_SHORT_QTY = 5;
 

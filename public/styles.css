@@ -145,6 +145,12 @@ textarea {
   color: var(--muted);
 }
 
+.field-label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
 .eyebrow {
   margin: 0 0 0.35rem;
   font-size: 0.82rem;
@@ -219,6 +225,27 @@ textarea {
 
 .button.ghost {
   background: transparent;
+}
+
+.stock-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.stock-switcher-button {
+  min-width: 4.5rem;
+}
+
+.stock-switcher-button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.stock-switcher-button.active:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
 }
 
 .button[disabled] {

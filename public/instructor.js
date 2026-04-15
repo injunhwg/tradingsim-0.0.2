@@ -19,6 +19,7 @@ import {
   readStorage,
   renderListItems,
   renderOrderBookRows,
+  renderStockSwitchButtons,
   renderTableRows,
   setConnectionPill,
   showPanel,
@@ -42,7 +43,7 @@ const dom = {
   pauseButton: document.querySelector('#session-pause'),
   closeButton: document.querySelector('#session-close'),
   finalizeButton: document.querySelector('#session-finalize'),
-  stockSelect: document.querySelector('#dashboard-stock-select'),
+  stockButtons: document.querySelector('#dashboard-stock-buttons'),
   selectedStock: document.querySelector('#dashboard-selected-stock'),
   sessionName: document.querySelector('#dashboard-session-name'),
   joinCode: document.querySelector('#dashboard-join-code'),
@@ -106,19 +107,12 @@ function syncSelectedStock(preferredStockId = state.selectedStockId) {
   const stocks = state.dashboard?.stocks || [];
   const availableIds = new Set(stocks.map((stock) => stock.id));
   state.selectedStockId = availableIds.has(preferredStockId) ? preferredStockId : stocks[0]?.id || null;
-
-  const selectedValue = state.selectedStockId ? String(state.selectedStockId) : '';
-  if (dom.stockSelect.value !== selectedValue) {
-    dom.stockSelect.value = selectedValue;
-  }
 }
 
 function renderStockOptions() {
   const stocks = state.dashboard?.stocks || [];
-  dom.stockSelect.innerHTML = stocks
-    .map((stock) => `<option value="${stock.id}">${formatStockLabel(stock)}</option>`)
-    .join('');
   syncSelectedStock(state.selectedStockId);
+  renderStockSwitchButtons(dom.stockButtons, stocks, state.selectedStockId);
 }
 
 function getSelectedStock() {
@@ -421,8 +415,13 @@ dom.logout.addEventListener('click', () => {
   clearInstructorState();
 });
 
-dom.stockSelect.addEventListener('change', () => {
-  state.selectedStockId = Number.parseInt(dom.stockSelect.value, 10) || null;
+dom.stockButtons.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-stock-id]');
+  if (!button) {
+    return;
+  }
+
+  state.selectedStockId = Number.parseInt(button.dataset.stockId, 10) || null;
   syncSelectedStock(state.selectedStockId);
   renderDashboard();
 });

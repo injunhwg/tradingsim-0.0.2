@@ -21,6 +21,7 @@ import {
   readStorage,
   renderListItems,
   renderOrderBookRows,
+  renderStockSwitchButtons,
   renderTableRows,
   setConnectionPill,
   showPanel,
@@ -35,9 +36,10 @@ const dom = {
   error: document.querySelector('#student-error'),
   toast: document.querySelector('#student-toast'),
   connection: document.querySelector('#student-connection'),
-  stockSelect: document.querySelector('#student-stock-select'),
+  stockButtons: document.querySelector('#student-stock-buttons'),
   selectedStock: document.querySelector('#student-selected-stock'),
   orderForm: document.querySelector('#student-order-form'),
+  orderStockButtons: document.querySelector('#student-order-stock-buttons'),
   orderStock: document.querySelector('#order-stock'),
   orderType: document.querySelector('#order-type'),
   orderPriceWrap: document.querySelector('#order-price-wrap'),
@@ -112,22 +114,15 @@ function syncSelectedStock(preferredStockId = state.selectedStockId) {
   state.selectedStockId = availableIds.has(preferredStockId) ? preferredStockId : state.stocks[0]?.id || null;
 
   const selectedValue = state.selectedStockId ? String(state.selectedStockId) : '';
-  if (dom.stockSelect.value !== selectedValue) {
-    dom.stockSelect.value = selectedValue;
-  }
   if (dom.orderStock.value !== selectedValue) {
     dom.orderStock.value = selectedValue;
   }
 }
 
 function renderStockOptions() {
-  const options = state.stocks
-    .map((stock) => `<option value="${stock.id}">${formatStockLabel(stock)}</option>`)
-    .join('');
-
-  dom.stockSelect.innerHTML = options;
-  dom.orderStock.innerHTML = options;
   syncSelectedStock(state.selectedStockId);
+  renderStockSwitchButtons(dom.stockButtons, state.stocks, state.selectedStockId);
+  renderStockSwitchButtons(dom.orderStockButtons, state.stocks, state.selectedStockId);
 }
 
 function getSelectedStock() {
@@ -553,17 +548,20 @@ dom.logout.addEventListener('click', () => {
   resetSession();
 });
 
-dom.stockSelect.addEventListener('change', () => {
-  state.selectedStockId = Number.parseInt(dom.stockSelect.value, 10) || null;
-  syncSelectedStock(state.selectedStockId);
-  render();
-});
+function handleStockSelection(event) {
+  const button = event.target.closest('[data-stock-id]');
+  if (!button) {
+    return;
+  }
 
-dom.orderStock.addEventListener('change', () => {
-  state.selectedStockId = Number.parseInt(dom.orderStock.value, 10) || null;
+  state.selectedStockId = Number.parseInt(button.dataset.stockId, 10) || null;
   syncSelectedStock(state.selectedStockId);
+  renderStockOptions();
   render();
-});
+}
+
+dom.stockButtons.addEventListener('click', handleStockSelection);
+dom.orderStockButtons.addEventListener('click', handleStockSelection);
 
 dom.orderType.addEventListener('change', () => {
   dom.orderPriceWrap.hidden = dom.orderType.value !== 'LIMIT';

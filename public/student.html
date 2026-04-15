@@ -74,21 +74,20 @@
         </div>
 
         <section class="panel">
-          <label>
-            조회 종목
-            <select id="student-stock-select"></select>
-          </label>
+          <span class="field-label">조회 종목</span>
+          <div id="student-stock-buttons" class="stock-switcher" role="group" aria-label="조회 종목"></div>
         </section>
 
         <div class="grid two-column-grid">
           <section class="panel">
             <h2>주문 제출</h2>
             <form id="student-order-form" class="stack">
+              <div>
+                <span class="field-label">종목</span>
+                <div id="student-order-stock-buttons" class="stock-switcher" role="group" aria-label="주문 종목"></div>
+                <input id="order-stock" name="sessionStockId" type="hidden">
+              </div>
               <div class="form-row">
-                <label>
-                  종목
-                  <select id="order-stock" name="sessionStockId"></select>
-                </label>
                 <label>
                   구분
                   <select id="order-side" name="side">
