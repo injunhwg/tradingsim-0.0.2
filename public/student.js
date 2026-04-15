@@ -87,7 +87,7 @@ function setStatus(status) {
     connected: '실시간 연결됨',
     reconnecting: '다시 연결 중',
     disconnected: '오프라인',
-    error: '네트워크 문제'
+    error: '네트워크 오류'
   };
 
   setConnectionPill(dom.connection, status, labels[status] || '오프라인');
@@ -225,8 +225,8 @@ function renderSummary() {
   dom.sessionState.textContent = formatSessionStatus(state.session?.status);
   dom.timeRemaining.textContent = formatDuration(getLiveRemainingSeconds());
   dom.peekStatus.textContent = state.features?.peeks?.supported
-    ? `${formatStockLabel(selectedStock)} 비공개 힌트 1회 가격은 ${formatMoney(state.features.peeks.priceCents)}이며 카드 기여값 3개를 보여줍니다.`
-    : '이 버전에서는 비공개 힌트를 사용할 수 없습니다.';
+    ? `${formatStockLabel(selectedStock)} 내부정보 구매 1회 가격은 ${formatMoney(state.features.peeks.priceCents)}이며 카드 기여값 3개를 보여줍니다.`
+    : '이 버전에서는 내부정보를 사용할 수 없습니다.';
   dom.buyPeek.disabled = !state.features?.peeks?.supported || state.session?.status === 'CLOSED' || !selectedStock;
 }
 
@@ -270,7 +270,7 @@ function renderFills() {
         </tr>
       `
     ),
-    '아직 체결이 없습니다.'
+    '체결내역이 없습니다.'
   );
 }
 
@@ -307,7 +307,7 @@ function renderAnnouncements() {
         </li>
       `
     ),
-    '아직 공지가 없습니다.'
+    '공시내역이 없습니다.'
   );
 }
 
@@ -322,7 +322,7 @@ function renderPeeks() {
         </li>
       `
     ),
-    '아직 구매한 힌트가 없습니다.'
+    '아직 구매한 내부정보가 없습니다.'
   );
 }
 
@@ -392,7 +392,7 @@ async function refreshStudentData() {
   ]);
 
   if (me.principal.role !== 'STUDENT') {
-    throw new Error('이 토큰은 학생 계정용이 아닙니다.');
+    throw new Error('이 토큰은 수강생용이 아닙니다.');
   }
 
   state.me = me;
@@ -433,7 +433,7 @@ function handleRealtimeEvent(event) {
       break;
     case 'peek.revealed':
       showToast(
-        `힌트: ${formatStockPrefix(state.stocks.find((stock) => stock.id === event.payload.peek.sessionStockId) || event.payload.peek)}${event.payload.peek.contributions
+        `내부정보: ${formatStockPrefix(state.stocks.find((stock) => stock.id === event.payload.peek.sessionStockId) || event.payload.peek)}${event.payload.peek.contributions
           .map((value) => formatPeekContribution(value))
           .join(', ')}`
       );
@@ -446,7 +446,7 @@ function handleRealtimeEvent(event) {
     case 'leaderboard.final':
       applyLeaderboard(event.payload);
       render();
-      showToast('최종 청산가가 공개되었습니다.');
+      showToast('내재가치가 공개되었습니다.');
       break;
     case 'game.state':
       state.session = {
@@ -642,7 +642,7 @@ dom.buyPeek.addEventListener('click', async () => {
       }
     });
     showToast(
-      `힌트 구매: ${formatStockPrefix(result.peek)}${result.peek.contributions
+      `내부정보 구매: ${formatStockPrefix(result.peek)}${result.peek.contributions
         .map((value) => formatPeekContribution(value))
         .join(', ')}`
     );

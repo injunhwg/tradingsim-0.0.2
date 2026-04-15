@@ -28,7 +28,7 @@ CREATE INDEX IF NOT EXISTS participants_session_role_idx
 
 CREATE TABLE IF NOT EXISTS accounts (
   participant_id INTEGER PRIMARY KEY REFERENCES participants(id) ON DELETE CASCADE,
-  cash_cents INTEGER NOT NULL DEFAULT 20000,
+  cash_cents INTEGER NOT NULL DEFAULT 40000,
   position_qty INTEGER NOT NULL DEFAULT 5,
   reserved_buy_cents INTEGER NOT NULL DEFAULT 0,
   reserved_sell_qty INTEGER NOT NULL DEFAULT 0,

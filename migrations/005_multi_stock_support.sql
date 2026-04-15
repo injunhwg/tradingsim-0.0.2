@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS session_stocks (
   display_name TEXT NOT NULL,
   sort_order INTEGER NOT NULL CHECK (sort_order > 0),
   reference_price_cents INTEGER NOT NULL CHECK (reference_price_cents > 0),
-  initial_position_qty INTEGER NOT NULL DEFAULT 0,
+  initial_position_qty INTEGER NOT NULL DEFAULT 5,
   liquidation_value_cents INTEGER,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

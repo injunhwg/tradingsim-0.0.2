@@ -264,7 +264,7 @@ function renderDashboard() {
         </li>
       `
     ),
-    '아직 공지가 없습니다.'
+    '공시내역이 없습니다.'
   );
 }
 
@@ -472,7 +472,7 @@ dom.finalizeButton.addEventListener('click', async () => {
       method: 'POST',
       token: state.auth.token
     });
-    showToast('최종 청산가가 공개되었습니다.');
+    showToast('내재가치가 공개되었습니다.');
     await loadInstructorSession();
   } catch (error) {
     showError(formatErrorMessage(error));
